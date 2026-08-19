@@ -1,0 +1,8 @@
+[
+  {"id": "energy_crystal", "name": "能量晶体", "description": "硅灵的基础能量来源。", "value": 1},
+  {"id": "metal", "name": "金属矿石", "description": "金属山脉的产物。", "value": 3},
+  {"id": "data_shard", "name": "数据碎片", "description": "前代文明的记忆碎片。", "value": 5},
+  {"id": "biomass", "name": "生物质", "description": "数据沼泽的有机物。", "value": 2},
+  {"id": "rare_metal", "name": "稀有元素", "description": "稀有能量元素。", "value": 10},
+  {"id": "artifact", "name": "遗迹造物", "description": "失落科技造物。", "value": 20}
+]

@@ -1,0 +1,50 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/world/world.gd" id="1_world"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
+sky_top_color = Color(0.04, 0.07, 0.18, 1)
+sky_horizon_color = Color(0.5, 0.58, 0.8, 1)
+ground_bottom_color = Color(0.08, 0.07, 0.14, 1)
+ground_horizon_color = Color(0.3, 0.34, 0.48, 1)
+sun_angle_max = 42.0
+sun_curve = 0.14
+
+[sub_resource type="Sky" id="Sky_sky"]
+sky_material = SubResource("ProceduralSkyMaterial_sky")
+
+[sub_resource type="Environment" id="Environment_env"]
+background_mode = 2
+sky = SubResource("Sky_sky")
+ambient_light_source = 3
+ambient_light_energy = 0.55
+tonemap_mode = 2
+fog_enabled = true
+fog_light_color = Color(0.55, 0.62, 0.82, 1)
+fog_density = 0.006
+glow_enabled = true
+glow_intensity = 0.5
+glow_bloom = 0.06
+
+[node name="World" type="Node3D"]
+script = ExtResource("1_world")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_env")
+
+[node name="DirectionalLight" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-50, 30, 0)
+shadow_enabled = true
+directional_shadow_max_distance = 120.0
+
+[node name="Terrain" type="Node3D" parent="."]
+
+[node name="ResourceNodes" type="Node3D" parent="."]
+
+[node name="Buildings" type="Node3D" parent="."]
+
+[node name="Characters" type="Node3D" parent="."]
+
+[node name="Effects" type="Node3D" parent="."]
+
+[node name="Decorations" type="Node3D" parent="."]

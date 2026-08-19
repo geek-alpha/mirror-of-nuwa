@@ -1,0 +1,25 @@
+{
+  "llm": {
+    "provider": "openai",
+    "api_key": "",
+    "base_url": "https://api.siliconflow.cn/v1",
+    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+    "temperature": 0.8,
+    "max_tokens": 500,
+    "request_interval_ms": 300,
+    "batch_size": 1,
+    "cache_ttl_seconds": 60,
+    "enabled": true
+  },
+  "game": {
+    "decision_interval_game_hours": 1.0,
+    "important_character_decision_interval": 0.25,
+    "memory_size": 20,
+    "long_term_memory_size": 100,
+    "time_scale_default": 1,
+    "world_seed": 42,
+    "seconds_per_game_hour": 6.0,
+    "character_count": 10,
+    "autosave_interval_game_days": 1
+  }
+}

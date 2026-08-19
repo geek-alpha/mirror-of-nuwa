@@ -1,0 +1,82 @@
+[
+  {
+    "id": "tech_language",
+    "name": "语言",
+    "description": "硅灵发展出复杂的交流符号系统。",
+    "prerequisites": [],
+    "cost": 100,
+    "effects": {"unlock_dialogue": true, "culture_generation": 1.2}
+  },
+  {
+    "id": "tech_tools",
+    "name": "工具制造",
+    "description": "用晶体与金属制作工具，提升采集效率。",
+    "prerequisites": [],
+    "cost": 150,
+    "effects": {"gather_rate": 1.3}
+  },
+  {
+    "id": "tech_fire",
+    "name": "能量掌控",
+    "description": "掌控能量晶体的稳定释放，学会利用能量。",
+    "prerequisites": ["tech_tools"],
+    "cost": 250,
+    "effects": {"energy_gain": 1.4}
+  },
+  {
+    "id": "tech_agriculture",
+    "name": "晶能农业",
+    "description": "培育能量植物，稳定食物来源。",
+    "prerequisites": ["tech_fire"],
+    "cost": 350,
+    "effects": {"population_growth": 1.2}
+  },
+  {
+    "id": "tech_writing",
+    "name": "刻痕文字",
+    "description": "将记忆与知识刻入晶体，历史得以流传。",
+    "prerequisites": ["tech_language"],
+    "cost": 400,
+    "effects": {"history_rate": 1.5, "research_rate": 1.3}
+  },
+  {
+    "id": "tech_metallurgy",
+    "name": "金属冶炼",
+    "description": "熔炼金属山脉的矿石，建造更坚固的结构。",
+    "prerequisites": ["tech_fire"],
+    "cost": 500,
+    "effects": {"build_rate": 1.5}
+  },
+  {
+    "id": "tech_philosophy",
+    "name": "哲学思辨",
+    "description": "追问存在、意识与创造者，文化蓬勃发展。",
+    "prerequisites": ["tech_writing"],
+    "cost": 700,
+    "effects": {"culture_generation": 1.8, "faith_gain": 1.3}
+  },
+  {
+    "id": "tech_science",
+    "name": "数据科学",
+    "description": "解读前代文明的遗迹数据。",
+    "prerequisites": ["tech_writing", "tech_metallurgy"],
+    "cost": 1200,
+    "effects": {"research_rate": 2.0}
+  },
+  {
+    "id": "tech_ai_awakening",
+    "name": "意识觉醒",
+    "description": "理解自身意识的本质，尝试上传与融合。",
+    "prerequisites": ["tech_science", "tech_philosophy"],
+    "cost": 2500,
+    "effects": {"research_rate": 2.5}
+  },
+  {
+    "id": "tech_spaceflight",
+    "name": "星晶航行",
+    "description": "建造跨位面星晶船，硅灵文明将触及星空。",
+    "prerequisites": ["tech_ai_awakening"],
+    "cost": 5000,
+    "effects": {"expansion": true}
+  }
+]

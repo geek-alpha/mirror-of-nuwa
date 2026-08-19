@@ -1,0 +1,38 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/characters/ai_character.gd" id="1_char"]
+[ext_resource type="Script" path="res://scripts/characters/ai_controller.gd" id="2_ctrl"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_col"]
+radius = 0.4
+height = 1.9
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_mesh"]
+radius = 0.35
+height = 1.6
+
+[node name="Character" type="CharacterBody3D"]
+script = ExtResource("1_char")
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+mesh = SubResource("CapsuleMesh_mesh")
+
+[node name="Rig" type="Node3D" parent="."]
+
+[node name="Collision" type="CollisionShape3D" parent="."]
+shape = SubResource("CapsuleShape3D_col")
+
+[node name="Label" type="Label3D" parent="."]
+position = Vector3(0, 1.0, 0)
+text = "硅灵"
+font_size = 32
+outline_size = 4
+pixel_size = 0.0035
+modulate = Color(1, 1, 1, 1)
+billboard = 1
+no_depth_test = true
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="."]
+
+[node name="AIController" type="Node" parent="."]
+script = ExtResource("2_ctrl")

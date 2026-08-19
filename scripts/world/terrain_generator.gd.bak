@@ -1,0 +1,325 @@
+class_name TerrainGenerator
+extends Node
+## 程序化地形生成器：多层高度场（山脉/丘陵/平原/湖泊）+ 生态区划分 + 坡度/高度着色 + 水面。
+## 生态区：0 翠风平原 / 1 金砂荒原 / 2 幽蓝湿地 / 3 紫雾密林 / 4 墨玉山脉。
+
+const WORLD_SIZE := 160.0
+const RESOLUTION := 97
+const WATER_LEVEL := 1.4
+const CELL_SIZE := WORLD_SIZE / float(RESOLUTION - 1)
+
+const BIOME_PLAINS := 0
+const BIOME_SAVANNA := 1
+const BIOME_WETLANDS := 2
+const BIOME_FOREST := 3
+const BIOME_MOUNTAINS := 4
+
+var heights: PackedFloat32Array = PackedFloat32Array()
+var slopes: PackedFloat32Array = PackedFloat32Array()
+var biome_grid: Array = []
+
+func generate(seed_value: int) -> Node3D:
+	var container := Node3D.new()
+	container.name = "TerrainMesh"
+
+	# 域扭曲噪声：让山脉/丘陵走向更自然，避免规则感
+	var warp_noise := FastNoiseLite.new()
+	warp_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	warp_noise.seed = seed_value + 3
+	warp_noise.frequency = 0.024
+	warp_noise.fractal_type = FastNoiseLite.FRACTAL_FBM
+	warp_noise.fractal_octaves = 3
+
+	var height_noise := FastNoiseLite.new()
+	height_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	height_noise.seed = seed_value
+	height_noise.frequency = 0.015
+	height_noise.fractal_type = FastNoiseLite.FRACTAL_FBM
+	height_noise.fractal_octaves = 4
+
+	var hill_noise := FastNoiseLite.new()
+	hill_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	hill_noise.seed = seed_value + 7
+	hill_noise.frequency = 0.055
+	hill_noise.fractal_type = FastNoiseLite.FRACTAL_FBM
+	hill_noise.fractal_octaves = 3
+
+	var peak_noise := FastNoiseLite.new()
+	peak_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	peak_noise.seed = seed_value + 11
+	peak_noise.frequency = 0.024
+	peak_noise.fractal_type = FastNoiseLite.FRACTAL_RIDGED
+	peak_noise.fractal_octaves = 4
+
+	var mountain_region := FastNoiseLite.new()
+	mountain_region.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	mountain_region.seed = seed_value + 29
+	mountain_region.frequency = 0.017
+	mountain_region.fractal_type = FastNoiseLite.FRACTAL_FBM
+	mountain_region.fractal_octaves = 3
+
+	var detail_noise := FastNoiseLite.new()
+	detail_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	detail_noise.seed = seed_value + 19
+	detail_noise.frequency = 0.09
+
+	var temp_noise := FastNoiseLite.new()
+	temp_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	temp_noise.seed = seed_value + 13
+	temp_noise.frequency = 0.013
+
+	var moist_noise := FastNoiseLite.new()
+	moist_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	moist_noise.seed = seed_value + 17
+	moist_noise.frequency = 0.016
+
+	var lake_noise := FastNoiseLite.new()
+	lake_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	lake_noise.seed = seed_value + 23
+	lake_noise.frequency = 0.027
+	lake_noise.fractal_type = FastNoiseLite.FRACTAL_FBM
+	lake_noise.fractal_octaves = 3
+
+	var color_noise := FastNoiseLite.new()
+	color_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	color_noise.seed = seed_value + 31
+	color_noise.frequency = 0.11
+
+	heights.resize(RESOLUTION * RESOLUTION)
+	slopes.resize(RESOLUTION * RESOLUTION)
+	biome_grid.clear()
+
+	for z in RESOLUTION:
+		for x in RESOLUTION:
+			var nx := _world_x(x)
+			var nz := _world_z(z)
+			var wx := warp_noise.get_noise_2d(nx, nz) * 4.0
+			var wz := warp_noise.get_noise_2d(nx + 57.3, nz + 91.7) * 4.0
+
+			# 山脉：山脊噪声 + 大尺度高度场共同抬高
+			var peak := maxf(0.0, peak_noise.get_noise_2d(nx + wx, nz + wz))
+			var mregion := smoothstep(0.18, 0.58, mountain_region.get_noise_2d(nx + wx, nz + wz))
+			var h := 3.2 + height_noise.get_noise_2d(nx + wx, nz + wz) * 5.5
+			h += hill_noise.get_noise_2d(nx, nz) * 2.4
+			h += mregion * (5.0 + peak * 26.0)
+			h += detail_noise.get_noise_2d(nx, nz) * 0.7
+
+			# 湖泊：低洼盆地挖低，湖心最深
+			var lake_mask := smoothstep(0.46, 0.64, lake_noise.get_noise_2d(nx, nz))
+			var dist := Vector2(nx, nz).length()
+			var spawn_keep := smoothstep(16.0, 30.0, dist)
+			h = lerpf(h, WATER_LEVEL - 0.65 - lake_mask * 0.35, lake_mask * spawn_keep)
+
+			# 出生点附近压平，方便开局观察与聚落展开
+			var flatten := 1.0 - smoothstep(13.0, 28.0, dist)
+			h = lerpf(h, 3.4, flatten)
+
+			h = clampf(h, 0.0, 36.0)
+			heights[z * RESOLUTION + x] = h
+
+			# 生态区：温度 + 湿度 + 海拔
+			var t := temp_noise.get_noise_2d(nx, nz)
+			var w := moist_noise.get_noise_2d(nx, nz)
+			var biome := BIOME_PLAINS
+			if h > 12.5:
+				biome = BIOME_MOUNTAINS
+			elif w > 0.3 and h < 7.5:
+				biome = BIOME_WETLANDS
+			elif t > 0.12 and w < 0.02:
+				biome = BIOME_SAVANNA
+			elif w > 0.12 and t < -0.08:
+				biome = BIOME_FOREST
+			biome_grid.append(biome)
+
+	# 坡度：用高度网格差分近似（用于岩石/雪线着色）
+	for z in RESOLUTION:
+		for x in RESOLUTION:
+			var hx := heights[z * RESOLUTION + mini(x + 1, RESOLUTION - 1)] - heights[z * RESOLUTION + maxi(x - 1, 0)]
+			var hz := heights[mini(z + 1, RESOLUTION - 1) * RESOLUTION + x] - heights[maxi(z - 1, 0) * RESOLUTION + x]
+			slopes[z * RESOLUTION + x] = Vector2(hx, hz).length() / (2.0 * CELL_SIZE)
+
+	# 构建地形网格（带顶点颜色）
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for z in RESOLUTION - 1:
+		for x in RESOLUTION - 1:
+			var i00 := z * RESOLUTION + x
+			var i10 := i00 + 1
+			var i01 := i00 + RESOLUTION
+			var i11 := i01 + 1
+			var p00 := _vertex(x, z)
+			var p10 := _vertex(x + 1, z)
+			var p01 := _vertex(x, z + 1)
+			var p11 := _vertex(x + 1, z + 1)
+			var c00 := _vertex_color(x, z, color_noise)
+			var c10 := _vertex_color(x + 1, z, color_noise)
+			var c01 := _vertex_color(x, z + 1, color_noise)
+			var c11 := _vertex_color(x + 1, z + 1, color_noise)
+			st.set_color(c00)
+			st.add_vertex(p00)
+			st.set_color(c10)
+			st.add_vertex(p10)
+			st.set_color(c01)
+			st.add_vertex(p01)
+			st.set_color(c10)
+			st.add_vertex(p10)
+			st.set_color(c11)
+			st.add_vertex(p11)
+			st.set_color(c01)
+			st.add_vertex(p01)
+	st.generate_normals()
+	var mesh := st.commit()
+
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.roughness = 0.95
+	mat.metallic = 0.02
+	mesh.surface_set_material(0, mat)
+
+	var mesh_node := MeshInstance3D.new()
+	mesh_node.name = "Visual"
+	mesh_node.mesh = mesh
+	container.add_child(mesh_node)
+
+	# 水面：仅覆盖低洼/湖泊区域，稍低于地形表面
+	var water := _build_water_mesh()
+	if water != null:
+		var water_node := MeshInstance3D.new()
+		water_node.name = "Water"
+		water_node.mesh = water
+		container.add_child(water_node)
+
+	# 碰撞：从地形网格生成三角网格碰撞体（与视觉精确一致）
+	var body := StaticBody3D.new()
+	body.name = "Collision"
+	var col := CollisionShape3D.new()
+	var trimesh := mesh.create_trimesh_shape() as ConcavePolygonShape3D
+	trimesh.backface_collision = true
+	col.shape = trimesh
+	body.add_child(col)
+	container.add_child(body)
+	return container
+
+func _build_water_mesh() -> ArrayMesh:
+	## 只在水面以下的网格单元生成水面，避免平面穿透山坡。
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var made := false
+	for z in RESOLUTION - 1:
+		for x in RESOLUTION - 1:
+			var h00 := heights[z * RESOLUTION + x]
+			var h10 := heights[z * RESOLUTION + x + 1]
+			var h01 := heights[(z + 1) * RESOLUTION + x]
+			var h11 := heights[(z + 1) * RESOLUTION + x + 1]
+			var underwater := h00 < WATER_LEVEL and h10 < WATER_LEVEL and h01 < WATER_LEVEL and h11 < WATER_LEVEL
+			if not underwater:
+				continue
+			made = true
+			var p00 := Vector3(_world_x(x), WATER_LEVEL, _world_z(z))
+			var p10 := Vector3(_world_x(x + 1), WATER_LEVEL, _world_z(z))
+			var p01 := Vector3(_world_x(x), WATER_LEVEL, _world_z(z + 1))
+			var p11 := Vector3(_world_x(x + 1), WATER_LEVEL, _world_z(z + 1))
+			st.add_vertex(p00)
+			st.add_vertex(p10)
+			st.add_vertex(p01)
+			st.add_vertex(p10)
+			st.add_vertex(p11)
+			st.add_vertex(p01)
+	if not made:
+		return null
+	st.generate_normals()
+	var mesh := st.commit()
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.12, 0.35, 0.5, 0.78)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.roughness = 0.08
+	mat.metallic = 0.15
+	mat.emission_enabled = true
+	mat.emission = Color(0.05, 0.2, 0.3)
+	mat.emission_energy_multiplier = 0.4
+	mesh.surface_set_material(0, mat)
+	return mesh
+
+func _world_x(x: int) -> float:
+	return float(x) / float(RESOLUTION - 1) * WORLD_SIZE - WORLD_SIZE / 2.0
+
+func _world_z(z: int) -> float:
+	return float(z) / float(RESOLUTION - 1) * WORLD_SIZE - WORLD_SIZE / 2.0
+
+func _vertex(x: int, z: int) -> Vector3:
+	return Vector3(_world_x(x), heights[z * RESOLUTION + x], _world_z(z))
+
+func _vertex_color(x: int, z: int, color_noise: FastNoiseLite) -> Color:
+	var biome := int(biome_grid[z * RESOLUTION + x])
+	var h := heights[z * RESOLUTION + x]
+	var slope := slopes[z * RESOLUTION + x]
+	var n := color_noise.get_noise_2d(_world_x(x), _world_z(z))
+	var c: Color = _biome_palette(biome)
+
+	# 海拔染色：低处湿润变深，高处露出岩石
+	var rock := Color(0.42, 0.4, 0.45)
+	if h > 13.0:
+		c = c.lerp(rock, clampf((h - 13.0) / 10.0, 0.0, 0.9))
+	# 雪线：高山顶覆雪
+	if biome == BIOME_MOUNTAINS and h > 24.0:
+		c = c.lerp(Color(0.92, 0.94, 0.98), clampf((h - 24.0) / 8.0, 0.0, 1.0))
+	# 陡坡露出岩土
+	if slope > 0.5:
+		c = c.lerp(Color(0.48, 0.43, 0.36), clampf((slope - 0.5) / 0.6, 0.0, 0.85))
+	# 湿度微调：湿地更暗沉
+	if biome == BIOME_WETLANDS:
+		c = c.darkened(0.12)
+	# 亮度抖动：让地表有细微斑驳，而非纯色
+	var brightness := 1.0 + n * 0.12
+	return Color(c.r * brightness, c.g * brightness, c.b * brightness)
+
+func _biome_palette(biome: int) -> Color:
+	match biome:
+		BIOME_PLAINS:
+			return Color(0.32, 0.55, 0.28)
+		BIOME_SAVANNA:
+			return Color(0.78, 0.6, 0.3)
+		BIOME_WETLANDS:
+			return Color(0.25, 0.48, 0.46)
+		BIOME_FOREST:
+			return Color(0.27, 0.28, 0.44)
+		BIOME_MOUNTAINS:
+			return Color(0.38, 0.37, 0.42)
+		_:
+			return Color(0.4, 0.5, 0.4)
+
+func height_at(world_x: float, world_z: float) -> float:
+	if heights.is_empty():
+		return 0.0
+	var fx := clampf((world_x + WORLD_SIZE / 2.0) / WORLD_SIZE * float(RESOLUTION - 1), 0.0, float(RESOLUTION - 1))
+	var fz := clampf((world_z + WORLD_SIZE / 2.0) / WORLD_SIZE * float(RESOLUTION - 1), 0.0, float(RESOLUTION - 1))
+	var x0 := int(floor(fx))
+	var z0 := int(floor(fz))
+	var x1 := mini(x0 + 1, RESOLUTION - 1)
+	var z1 := mini(z0 + 1, RESOLUTION - 1)
+	var tx := fx - float(x0)
+	var tz := fz - float(z0)
+	var h00 := heights[z0 * RESOLUTION + x0]
+	var h10 := heights[z0 * RESOLUTION + x1]
+	var h01 := heights[z1 * RESOLUTION + x0]
+	var h11 := heights[z1 * RESOLUTION + x1]
+	var h0 := lerpf(h00, h10, tx)
+	var h1 := lerpf(h01, h11, tx)
+	return lerpf(h0, h1, tz)
+
+func biome_at(world_x: float, world_z: float) -> int:
+	if biome_grid.is_empty():
+		return BIOME_PLAINS
+	var fx := clampi(int((world_x + WORLD_SIZE / 2.0) / WORLD_SIZE * float(RESOLUTION - 1)), 0, RESOLUTION - 1)
+	var fz := clampi(int((world_z + WORLD_SIZE / 2.0) / WORLD_SIZE * float(RESOLUTION - 1)), 0, RESOLUTION - 1)
+	return int(biome_grid[fz * RESOLUTION + fx])
+
+func is_water(world_x: float, world_z: float) -> bool:
+	return height_at(world_x, world_z) < WATER_LEVEL
+
+func slope_at(world_x: float, world_z: float) -> float:
+	if slopes.is_empty():
+		return 0.0
+	var fx := clampi(int((world_x + WORLD_SIZE / 2.0) / WORLD_SIZE * float(RESOLUTION - 1)), 0, RESOLUTION - 1)
+	var fz := clampi(int((world_z + WORLD_SIZE / 2.0) / WORLD_SIZE * float(RESOLUTION - 1)), 0, RESOLUTION - 1)
+	return slopes[fz * RESOLUTION + fx]

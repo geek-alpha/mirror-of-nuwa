@@ -1,0 +1,30 @@
+[
+  {
+    "id": "event_energy_storm",
+    "name": "能量风暴",
+    "description": "一场能量风暴席卷了{region}。",
+    "type": "disaster",
+    "effects": {"energy": -10}
+  },
+  {
+    "id": "event_crystal_bloom",
+    "name": "晶体绽放",
+    "description": "{region}的能量晶体大量绽放。",
+    "type": "blessing",
+    "effects": {"energy_crystal": 50}
+  },
+  {
+    "id": "event_ruin_signal",
+    "name": "遗迹信号",
+    "description": "{region}的地下遗迹发出神秘信号。",
+    "type": "mystery",
+    "effects": {"data_shard": 20}
+  },
+  {
+    "id": "event_meteor",
+    "name": "晶雨",
+    "description": "晶雨降落在{region}，带来了稀有元素。",
+    "type": "blessing",
+    "effects": {"rare_metal": 5}
+  }
+]

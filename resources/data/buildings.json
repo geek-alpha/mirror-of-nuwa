@@ -1,0 +1,101 @@
+[
+  {
+    "id": "building_house",
+    "name": "部落小屋",
+    "description": "用原木与茅草搭建的居所，是部族栖身之处。",
+    "cost": {"energy_crystal": 20, "metal": 5},
+    "function": "housing",
+    "capacity": 4,
+    "durability": 100,
+    "size": [4, 3, 4],
+    "style": "hut"
+  },
+  {
+    "id": "building_workshop",
+    "name": "部落工坊",
+    "description": "制造工具与武器的工棚。",
+    "cost": {"energy_crystal": 25, "metal": 15},
+    "function": "crafting",
+    "capacity": 3,
+    "durability": 120,
+    "size": [5, 3, 5],
+    "style": "workshop"
+  },
+  {
+    "id": "building_temple",
+    "name": "晶辉圣殿",
+    "description": "祭祀镜外之神与先祖的阶梯圣殿。",
+    "cost": {"energy_crystal": 30},
+    "function": "religion",
+    "capacity": 8,
+    "durability": 150,
+    "size": [6, 4, 6],
+    "style": "temple"
+  },
+  {
+    "id": "building_lab",
+    "name": "遗迹研究室",
+    "description": "解读前代文明遗迹的场所。",
+    "cost": {"energy_crystal": 40, "metal": 25, "data_shard": 10},
+    "function": "research",
+    "capacity": 4,
+    "durability": 130,
+    "size": [5, 4, 5],
+    "style": "lab"
+  },
+  {
+    "id": "building_wall",
+    "name": "原木围栏",
+    "description": "保护聚落的尖桩围栏。",
+    "cost": {"energy_crystal": 15, "metal": 10},
+    "function": "defense",
+    "capacity": 0,
+    "durability": 300,
+    "size": [8, 3, 1],
+    "style": "palisade"
+  },
+  {
+    "id": "building_farm",
+    "name": "部落农田",
+    "description": "培育晶苗与能量植物。",
+    "cost": {"energy_crystal": 10, "biomass": 5},
+    "function": "food",
+    "capacity": 0,
+    "durability": 80,
+    "size": [6, 1, 6],
+    "style": "farm"
+  },
+  {
+    "id": "building_altar",
+    "name": "先祖祭台",
+    "description": "祭祀先祖与镜外之神的圣坛，燃烧着不灭的祭火。",
+    "cost": {"energy_crystal": 15, "metal": 5},
+    "function": "religion",
+    "capacity": 6,
+    "durability": 200,
+    "size": [6, 3, 6],
+    "style": "altar"
+  },
+  {
+    "id": "building_totem",
+    "name": "图腾柱",
+    "description": "部族图腾，守护聚落入口。",
+    "cost": {"energy_crystal": 5, "biomass": 10},
+    "function": "religion",
+    "capacity": 0,
+    "durability": 80,
+    "size": [1, 4, 1],
+    "style": "totem"
+  },
+  {
+    "id": "building_bonfire",
+    "name": "篝火",
+    "description": "聚落中的篝火，驱散黑暗与寒冷。",
+    "cost": {"biomass": 8},
+    "function": "community",
+    "capacity": 4,
+    "durability": 60,
+    "size": [2, 1, 2],
+    "style": "bonfire"
+  }
+]

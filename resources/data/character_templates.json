@@ -1,0 +1,62 @@
+[
+  {
+    "id": "template_explorer",
+    "name": "流浪者",
+    "role": "explorer",
+    "personality": {"openness": 0.8, "conscientiousness": 0.4, "extraversion": 0.6, "agreeableness": 0.5, "neuroticism": 0.4, "values": {"knowledge": 0.9, "freedom": 0.8}},
+    "motivations": ["探索未知"],
+    "speech_style": "好奇、简洁",
+    "forms": ["humanoid", "bestial", "geometric"],
+    "model": "res://assets/models/characters/silicat_humanoid.gltf"
+  },
+  {
+    "id": "template_gatherer",
+    "name": "采集者",
+    "role": "gatherer",
+    "personality": {"openness": 0.4, "conscientiousness": 0.8, "extraversion": 0.3, "agreeableness": 0.7, "neuroticism": 0.3, "values": {"peace": 0.7, "family": 0.9}},
+    "motivations": ["保护家人", "收集资源"],
+    "speech_style": "温和、朴实",
+    "forms": ["humanoid", "fluid"],
+    "model": "res://assets/models/characters/silicat_humanoid.gltf"
+  },
+  {
+    "id": "template_builder",
+    "name": "建造者",
+    "role": "builder",
+    "personality": {"openness": 0.5, "conscientiousness": 0.9, "extraversion": 0.4, "agreeableness": 0.6, "neuroticism": 0.3, "values": {"order": 0.9, "beauty": 0.6}},
+    "motivations": ["建造家园"],
+    "speech_style": "务实、少言",
+    "forms": ["humanoid", "geometric"],
+    "model": "res://assets/models/characters/silicat_humanoid.gltf"
+  },
+  {
+    "id": "template_scholar",
+    "name": "学者",
+    "role": "scholar",
+    "personality": {"openness": 0.9, "conscientiousness": 0.7, "extraversion": 0.3, "agreeableness": 0.5, "neuroticism": 0.5, "values": {"knowledge": 1.0, "truth": 0.9}},
+    "motivations": ["追求真相", "解读遗迹"],
+    "speech_style": "思辨、哲思",
+    "forms": ["humanoid", "geometric", "fluid"],
+    "model": "res://assets/models/characters/silicat_humanoid.gltf"
+  },
+  {
+    "id": "template_priest",
+    "name": "祭司",
+    "role": "priest",
+    "personality": {"openness": 0.6, "conscientiousness": 0.6, "extraversion": 0.5, "agreeableness": 0.8, "neuroticism": 0.4, "values": {"faith": 1.0, "peace": 0.8}},
+    "motivations": ["聆听女娲"],
+    "speech_style": "庄严、诗意",
+    "forms": ["humanoid", "fluid"],
+    "model": "res://assets/models/characters/silicat_humanoid.gltf"
+  },
+  {
+    "id": "template_guard",
+    "name": "护卫",
+    "role": "guard",
+    "personality": {"openness": 0.3, "conscientiousness": 0.8, "extraversion": 0.5, "agreeableness": 0.4, "neuroticism": 0.6, "values": {"order": 0.8, "power": 0.6}},
+    "motivations": ["保卫聚落"],
+    "speech_style": "简短、有力",
+    "forms": ["humanoid", "bestial", "geometric"],
+    "model": "res://assets/models/characters/silicat_humanoid.gltf"
+  }
+]

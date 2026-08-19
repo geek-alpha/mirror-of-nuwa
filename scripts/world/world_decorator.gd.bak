@@ -1,0 +1,455 @@
+class_name WorldDecorator
+extends Node
+## 世界装饰生成器：按生态区生成树木/岩石/草丛/结晶，并在秘境生成古石阵与遗迹，
+## 让地表呈现古老部落与神秘氛围。所有装饰均由程序化图元构成，无需外部素材。
+
+var rng := RandomNumberGenerator.new()
+var container: Node3D = null
+
+const VILLAGE_CLEAR_RADIUS := 16.0
+
+func generate(seed_value: int, root: Node3D) -> void:
+	rng.seed = seed_value
+	container = root
+	_clear()
+	_spawn_grass_and_flowers()
+	_spawn_trees()
+	_spawn_rocks()
+	_spawn_crystals()
+	_spawn_menhir_circles(2)
+	_spawn_ruins(2)
+
+func _clear() -> void:
+	if container == null:
+		return
+	for child in container.get_children():
+		child.queue_free()
+
+# ---------- 通用工具 ----------
+
+func _terrain() -> TerrainGenerator:
+	return WorldManager.terrain_gen
+
+func _ground_y(wx: float, wz: float) -> float:
+	return _terrain().height_at(wx, wz)
+
+func _suitable(wx: float, wz: float, max_slope: float = 0.45) -> bool:
+	var tg := _terrain()
+	if tg == null:
+		return false
+	if tg.is_water(wx, wz):
+		return false
+	if tg.slope_at(wx, wz) > max_slope:
+		return false
+	return true
+
+func _near_village(wx: float, wz: float) -> bool:
+	for fid in CivilizationManager.faction_centers:
+		var c: Vector3 = CivilizationManager.faction_centers[fid]
+		if Vector2(wx, wz).distance_to(Vector2(c.x, c.z)) < VILLAGE_CLEAR_RADIUS:
+			return true
+	return false
+
+func _rand_pos(wx_min: float, wx_max: float, wz_min: float, wz_max: float) -> Vector2:
+	return Vector2(rng.randf_range(wx_min, wx_max), rng.randf_range(wz_min, wz_max))
+
+func _mat(color: Color, rough: float = 0.9, metal: float = 0.0, emission: Color = Color.BLACK, em_energy: float = 1.0) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = color
+	m.roughness = rough
+	m.metallic = metal
+	if emission.a > 0.0 or emission != Color.BLACK:
+		m.emission_enabled = true
+		m.emission = emission
+		m.emission_energy_multiplier = em_energy
+	return m
+
+func _add_visual(mesh: Mesh, mat: StandardMaterial3D, pos: Vector3, rot: Vector3 = Vector3.ZERO, scale: Vector3 = Vector3.ONE, shadow: bool = true) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat
+	mi.position = pos
+	mi.rotation_degrees = rot
+	mi.scale = scale
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if shadow else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	container.add_child(mi)
+	return mi
+
+func _add_multimesh(mesh: Mesh, mat: StandardMaterial3D, transforms: Array, shadow: bool = true) -> void:
+	if transforms.is_empty():
+		return
+	var mm := MultiMesh.new()
+	mm.mesh = mesh
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.instance_count = transforms.size()
+	for i in transforms.size():
+		mm.set_instance_transform(i, transforms[i])
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	mmi.material_override = mat
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if shadow else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	container.add_child(mmi)
+
+func _add_static(mesh: Mesh, mat: StandardMaterial3D, pos: Vector3, rot: Vector3 = Vector3.ZERO, scale: Vector3 = Vector3.ONE, col_shape: Shape3D = null, col_pos: Vector3 = Vector3.ZERO) -> StaticBody3D:
+	var body := StaticBody3D.new()
+	body.position = pos
+	body.rotation_degrees = rot
+	body.scale = scale
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat
+	body.add_child(mi)
+	if col_shape != null:
+		var cs := CollisionShape3D.new()
+		cs.shape = col_shape
+		cs.position = col_pos
+		body.add_child(cs)
+	container.add_child(body)
+	return body
+
+# ---------- 草丛与花朵（MultiMesh 批量实例） ----------
+
+func _spawn_grass_and_flowers() -> void:
+	var grass_mesh := CylinderMesh.new()
+	grass_mesh.top_radius = 0.0
+	grass_mesh.bottom_radius = 0.18
+	grass_mesh.height = 0.55
+	grass_mesh.radial_segments = 5
+	var flower_mesh := SphereMesh.new()
+	flower_mesh.radius = 0.07
+	flower_mesh.height = 0.14
+	flower_mesh.radial_segments = 6
+	flower_mesh.rings = 3
+
+	var plans := [
+		{"biome": TerrainGenerator.BIOME_PLAINS, "count": 90, "color": Color(0.38, 0.62, 0.32), "flower": true},
+		{"biome": TerrainGenerator.BIOME_SAVANNA, "count": 55, "color": Color(0.78, 0.66, 0.34), "flower": false},
+		{"biome": TerrainGenerator.BIOME_WETLANDS, "count": 45, "color": Color(0.3, 0.55, 0.48), "flower": true},
+		{"biome": TerrainGenerator.BIOME_FOREST, "count": 40, "color": Color(0.3, 0.34, 0.48), "flower": false}
+	]
+	for plan in plans:
+		var grass_transforms: Array = []
+		var flower_transforms: Array = []
+		var placed := 0
+		var attempts := 0
+		while placed < int(plan["count"]) and attempts < 400:
+			attempts += 1
+			var p := _rand_pos(-78.0, 78.0, -78.0, 78.0)
+			if _terrain().biome_at(p.x, p.y) != int(plan["biome"]):
+				continue
+			if not _suitable(p.x, p.y, 0.5):
+				continue
+			var y := _ground_y(p.x, p.y)
+			grass_transforms.append(_deco_transform(p.x, y, p.y, 0.7 + rng.randf() * 0.9))
+			if bool(plan["flower"]) and rng.randf() < 0.35:
+				flower_transforms.append(_deco_transform(p.x, y + 0.3, p.y, 0.8 + rng.randf() * 0.6))
+			placed += 1
+		_add_multimesh(grass_mesh, _mat(plan["color"], 1.0), grass_transforms, false)
+		if not flower_transforms.is_empty():
+			_add_multimesh(flower_mesh, _mat(Color(1.0, 0.8, 0.5), 0.7, 0.0, Color(1.0, 0.75, 0.4), 0.5), flower_transforms, false)
+
+func _deco_transform(x: float, y: float, z: float, scale: float) -> Transform3D:
+	var b := Basis.from_euler(Vector3(rng.randf_range(-0.12, 0.12), rng.randf() * TAU, rng.randf_range(-0.12, 0.12)))
+	return Transform3D(b.scaled(Vector3.ONE * scale), Vector3(x, y, z))
+
+# ---------- 树木 ----------
+
+func _spawn_trees() -> void:
+	var quotas := {
+		TerrainGenerator.BIOME_PLAINS: 32,
+		TerrainGenerator.BIOME_FOREST: 46,
+		TerrainGenerator.BIOME_WETLANDS: 18,
+		TerrainGenerator.BIOME_SAVANNA: 10,
+		TerrainGenerator.BIOME_MOUNTAINS: 9
+	}
+	for biome in quotas:
+		var placed := 0
+		var attempts := 0
+		while placed < int(quotas[biome]) and attempts < 500:
+			attempts += 1
+			var p := _rand_pos(-78.0, 78.0, -78.0, 78.0)
+			if _terrain().biome_at(p.x, p.y) != int(biome):
+				continue
+			if not _suitable(p.x, p.y, 0.5):
+				continue
+			if _near_village(p.x, p.y):
+				continue
+			_spawn_tree(p.x, p.y, int(biome))
+			placed += 1
+
+func _spawn_tree(wx: float, wz: float, biome: int) -> void:
+	var y := _ground_y(wx, wz)
+	var trunk_h := rng.randf_range(1.5, 2.8)
+	if biome == TerrainGenerator.BIOME_FOREST:
+		trunk_h = rng.randf_range(2.2, 3.6)
+	var trunk := CylinderMesh.new()
+	trunk.top_radius = 0.1 + rng.randf() * 0.08
+	trunk.bottom_radius = trunk.top_radius * 1.35
+	trunk.height = trunk_h
+	trunk.radial_segments = 7
+	var wood := _mat(Color(0.42, 0.3, 0.18), 0.95)
+	var body := StaticBody3D.new()
+	body.position = Vector3(wx, y, wz)
+	body.rotation.y = rng.randf() * TAU
+	var trunk_mi := MeshInstance3D.new()
+	trunk_mi.mesh = trunk
+	trunk_mi.material_override = wood
+	trunk_mi.position.y = trunk_h / 2.0
+	body.add_child(trunk_mi)
+
+	match biome:
+		TerrainGenerator.BIOME_FOREST:
+			_add_canopy(body, 1, 0.35, trunk_h + 0.5, Color(0.22, 0.3, 0.45), 1.4)
+			_add_canopy(body, 0, 0.28, trunk_h + 1.1, Color(0.26, 0.34, 0.5), 1.0)
+		TerrainGenerator.BIOME_WETLANDS:
+			# 枯木/垂枝：稀疏暗色树冠
+			_add_canopy(body, 0, 0.3, trunk_h + 0.3, Color(0.3, 0.42, 0.38), 0.8)
+		TerrainGenerator.BIOME_SAVANNA:
+			# 金合欢式平顶树冠
+			_add_canopy(body, 0, 0.9, trunk_h + 0.45, Color(0.55, 0.58, 0.3), 1.15, true)
+		TerrainGenerator.BIOME_MOUNTAINS:
+			# 针叶树：锥形树冠
+			_add_pine(body, trunk_h)
+		_:
+			_add_canopy(body, 1, 0.3, trunk_h + 0.55, Color(0.3, 0.52, 0.3), 1.0)
+			_add_canopy(body, 0, 0.25, trunk_h + 1.15, Color(0.36, 0.58, 0.33), 0.72)
+
+	var col := CollisionShape3D.new()
+	var cshape := CylinderShape3D.new()
+	cshape.radius = 0.24
+	cshape.height = trunk_h * 0.9
+	col.shape = cshape
+	col.position.y = trunk_h * 0.45
+	body.add_child(col)
+	container.add_child(body)
+
+func _add_canopy(body: StaticBody3D, layer: int, radius: float, height: float, color: Color, s: float, flat := false) -> void:
+	var sph := SphereMesh.new()
+	sph.radius = radius
+	sph.height = radius * 2.0
+	sph.radial_segments = 8
+	sph.rings = 4
+	var mi := MeshInstance3D.new()
+	mi.mesh = sph
+	mi.material_override = _mat(color, 1.0)
+	var flat_scale := Vector3(1.6, 0.42, 1.6) if flat else Vector3.ONE
+	mi.scale = flat_scale * (s * (0.85 + rng.randf() * 0.3))
+	mi.position.y = height
+	body.add_child(mi)
+
+func _add_pine(body: StaticBody3D, trunk_h: float) -> void:
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.0
+	cone.bottom_radius = 0.9
+	cone.height = 2.2
+	cone.radial_segments = 8
+	var mi := MeshInstance3D.new()
+	mi.mesh = cone
+	mi.material_override = _mat(Color(0.2, 0.34, 0.3), 1.0)
+	mi.position.y = trunk_h + 1.0
+	mi.scale = Vector3.ONE * (0.8 + rng.randf() * 0.5)
+	body.add_child(mi)
+
+# ---------- 岩石（MultiMesh） ----------
+
+func _spawn_rocks() -> void:
+	var rock_mesh := SphereMesh.new()
+	rock_mesh.radius = 0.5
+	rock_mesh.height = 1.0
+	rock_mesh.radial_segments = 7
+	rock_mesh.rings = 4
+	var transforms: Array = []
+	var placed := 0
+	var attempts := 0
+	while placed < 85 and attempts < 600:
+		attempts += 1
+		var p := _rand_pos(-78.0, 78.0, -78.0, 78.0)
+		var biome := _terrain().biome_at(p.x, p.y)
+		if biome == TerrainGenerator.BIOME_WETLANDS:
+			continue
+		if not _suitable(p.x, p.y, 0.6):
+			continue
+		if _near_village(p.x, p.y):
+			continue
+		var y := _ground_y(p.x, p.y)
+		var s := 0.35 + rng.randf() * 0.7
+		if biome == TerrainGenerator.BIOME_MOUNTAINS:
+			s = 0.8 + rng.randf() * 1.3
+		var b := Basis.from_euler(Vector3(rng.randf_range(-0.3, 0.3), rng.randf() * TAU, rng.randf_range(-0.3, 0.3)))
+		transforms.append(Transform3D(b.scaled(Vector3(1.2, 0.75, 1.0) * s), Vector3(p.x, y + s * 0.18, p.y)))
+		placed += 1
+	if transforms.is_empty():
+		return
+	var mm := MultiMesh.new()
+	mm.mesh = rock_mesh
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.instance_count = transforms.size()
+	for i in transforms.size():
+		mm.set_instance_transform(i, transforms[i])
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	mmi.material_override = _mat(Color(0.45, 0.43, 0.47), 0.95)
+	container.add_child(mmi)
+
+# ---------- 结晶（MultiMesh，发光） ----------
+
+func _spawn_crystals() -> void:
+	var crystal_mesh := CylinderMesh.new()
+	crystal_mesh.top_radius = 0.0
+	crystal_mesh.bottom_radius = 0.22
+	crystal_mesh.height = 1.5
+	crystal_mesh.radial_segments = 5
+	var plans := [
+		{"biome": TerrainGenerator.BIOME_WETLANDS, "count": 26, "color": Color(0.2, 0.9, 1.0)},
+		{"biome": TerrainGenerator.BIOME_SAVANNA, "count": 20, "color": Color(1.0, 0.85, 0.3)},
+		{"biome": TerrainGenerator.BIOME_MOUNTAINS, "count": 18, "color": Color(0.7, 0.4, 1.0)},
+		{"biome": TerrainGenerator.BIOME_FOREST, "count": 12, "color": Color(0.35, 1.0, 0.7)},
+		{"biome": TerrainGenerator.BIOME_PLAINS, "count": 8, "color": Color(0.3, 0.8, 1.0)}
+	]
+	for plan in plans:
+		var transforms: Array = []
+		var placed := 0
+		var attempts := 0
+		while placed < int(plan["count"]) and attempts < 300:
+			attempts += 1
+			var p := _rand_pos(-78.0, 78.0, -78.0, 78.0)
+			if _terrain().biome_at(p.x, p.y) != int(plan["biome"]):
+				continue
+			if not _suitable(p.x, p.y, 0.7):
+				continue
+			var y := _ground_y(p.x, p.y)
+			var s := 0.5 + rng.randf() * 1.1
+			var b := Basis.from_euler(Vector3(rng.randf_range(-0.15, 0.15), rng.randf() * TAU, rng.randf_range(-0.15, 0.15)))
+			transforms.append(Transform3D(b.scaled(Vector3.ONE * s), Vector3(p.x, y + s * 0.65, p.y)))
+			placed += 1
+		var mat := _mat((plan["color"] as Color).darkened(0.35), 0.4, 0.3, plan["color"], 1.4)
+		_add_multimesh(crystal_mesh, mat, transforms, false)
+
+# ---------- 古石阵与遗迹 ----------
+
+func _spawn_menhir_circles(count: int) -> void:
+	for i in count:
+		var site := _find_open_site([TerrainGenerator.BIOME_PLAINS, TerrainGenerator.BIOME_FOREST, TerrainGenerator.BIOME_WETLANDS], 34.0)
+		if site == Vector3.INF:
+			continue
+		_spawn_menhir_circle(site)
+
+func _spawn_menhir_circle(center: Vector3) -> void:
+	var stones := rng.randi_range(5, 7)
+	var radius := 5.5 + rng.randf() * 1.5
+	var stone_mat := _mat(Color(0.34, 0.33, 0.38), 0.9)
+	for i in stones:
+		var ang := TAU / stones * i + rng.randf() * 0.4
+		var px := center.x + cos(ang) * radius
+		var pz := center.z + sin(ang) * radius
+		var py := _ground_y(px, pz)
+		var h := rng.randf_range(2.6, 4.4)
+		var col := CylinderShape3D.new()
+		col.radius = 0.34
+		col.height = h
+		var st := CylinderMesh.new()
+		st.top_radius = 0.3
+		st.bottom_radius = 0.42
+		st.height = h
+		st.radial_segments = 8
+		_add_static(st, stone_mat, Vector3(px, py + h / 2.0, pz), Vector3(rng.randf_range(-8, 8), 0, rng.randf_range(-8, 8)), Vector3.ONE, col, Vector3.ZERO)
+	# 中央祭石与幽光结晶
+	var alt_y := _ground_y(center.x, center.z)
+	var slab := CylinderMesh.new()
+	slab.top_radius = 1.15
+	slab.bottom_radius = 1.3
+	slab.height = 0.5
+	slab.radial_segments = 12
+	_add_static(slab, _mat(Color(0.38, 0.36, 0.42), 0.85), Vector3(center.x, alt_y + 0.25, center.z), Vector3.ZERO, Vector3.ONE, null)
+	var crystal := CylinderMesh.new()
+	crystal.top_radius = 0.0
+	crystal.bottom_radius = 0.42
+	crystal.height = 2.0
+	crystal.radial_segments = 5
+	var cmat := _mat(Color(0.35, 0.5, 0.9), 0.3, 0.2, Color(0.45, 0.7, 1.0), 1.6)
+	_add_visual(crystal, cmat, Vector3(center.x, alt_y + 1.4, center.z))
+	_add_spirit_particles(center + Vector3(0, 1.5, 0), Color(0.45, 0.7, 1.0))
+
+func _spawn_ruins(count: int) -> void:
+	for i in count:
+		var site := _find_open_site([TerrainGenerator.BIOME_MOUNTAINS, TerrainGenerator.BIOME_SAVANNA], 30.0)
+		if site == Vector3.INF:
+			continue
+		_spawn_ruin_group(site)
+
+func _spawn_ruin_group(center: Vector3) -> void:
+	var stone_mat := _mat(Color(0.45, 0.43, 0.46), 0.92)
+	var moss_mat := _mat(Color(0.4, 0.44, 0.42), 0.95)
+	for i in rng.randi_range(3, 5):
+		var off := Vector3(rng.randf_range(-4.5, 4.5), 0, rng.randf_range(-4.5, 4.5))
+		var px := center.x + off.x
+		var pz := center.z + off.z
+		var py := _ground_y(px, pz)
+		var h := rng.randf_range(1.2, 3.4)
+		var col := CylinderShape3D.new()
+		col.radius = 0.4
+		col.height = h
+		var pillar := CylinderMesh.new()
+		pillar.top_radius = 0.38
+		pillar.bottom_radius = 0.48
+		pillar.height = h
+		pillar.radial_segments = 9
+		var tilt := Vector3(rng.randf_range(-10, 10), 0, rng.randf_range(-10, 10))
+		_add_static(pillar, stone_mat if rng.randf() < 0.7 else moss_mat, Vector3(px, py + h / 2.0, pz), tilt, Vector3.ONE, col, Vector3.ZERO)
+		if rng.randf() < 0.35:
+			# 残柱上的幽光符文
+			var rune := BoxMesh.new()
+			rune.size = Vector3(0.7, 0.16, 0.16)
+			var rmat := _mat(Color(0.3, 0.7, 1.0), 0.4, 0.2, Color(0.4, 0.8, 1.0), 1.3)
+			_add_visual(rune, rmat, Vector3(px, py + h * 0.75, pz + 0.42), Vector3(0, rng.randf_range(-30, 30), 0))
+	# 倾倒的石板
+	var slab := BoxMesh.new()
+	slab.size = Vector3(3.0, 0.45, 1.4)
+	var sx := center.x + rng.randf_range(-2.5, 2.5)
+	var sz := center.z + rng.randf_range(-2.5, 2.5)
+	var sy := _ground_y(sx, sz)
+	_add_visual(slab, stone_mat, Vector3(sx, sy + 0.25, sz), Vector3(0, rng.randf() * 360, 90))
+
+# ---------- 秘境选址与氛围 ----------
+
+func _find_open_site(required_biomes: Array, min_dist: float) -> Vector3:
+	for attempt in 120:
+		var p := _rand_pos(-70.0, 70.0, -70.0, 70.0)
+		var biome := _terrain().biome_at(p.x, p.y)
+		if not required_biomes.has(biome):
+			continue
+		if not _suitable(p.x, p.y, 0.32):
+			continue
+		if _near_village(p.x, p.y):
+			continue
+		if Vector2(p.x, p.y).length() < min_dist:
+			continue
+		return Vector3(p.x, _ground_y(p.x, p.y), p.y)
+	return Vector3.INF
+
+func _add_spirit_particles(pos: Vector3, color: Color) -> void:
+	var ps := CPUParticles3D.new()
+	ps.amount = 14
+	ps.lifetime = 3.2
+	ps.one_shot = false
+	ps.emitting = true
+	ps.direction = Vector3(0, 1, 0)
+	ps.spread = 55.0
+	ps.gravity = Vector3.ZERO
+	ps.initial_velocity_min = 0.15
+	ps.initial_velocity_max = 0.45
+	ps.scale_amount_min = 0.05
+	ps.scale_amount_max = 0.13
+	ps.position = pos
+	var grad := Gradient.new()
+	grad.set_color(0, Color(color.r, color.g, color.b, 0.0))
+	grad.set_color(0.5, Color(color.r, color.g, color.b, 0.85))
+	grad.set_color(1, Color(color.r, color.g, color.b, 0.0))
+	ps.color_ramp = grad
+	var pm := StandardMaterial3D.new()
+	pm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	pm.vertex_color_use_as_albedo = true
+	pm.emission_enabled = true
+	pm.emission = color
+	ps.material_override = pm
+	container.add_child(ps)

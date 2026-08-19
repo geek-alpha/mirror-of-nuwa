@@ -1,0 +1,18 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/world/building.gd" id="1_b"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_col"]
+size = Vector3(4, 3, 4)
+
+[sub_resource type="BoxMesh" id="BoxMesh_mesh"]
+size = Vector3(4, 3, 4)
+
+[node name="Building" type="StaticBody3D"]
+script = ExtResource("1_b")
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_mesh")
+
+[node name="Collision" type="CollisionShape3D" parent="."]
+shape = SubResource("BoxShape3D_col")

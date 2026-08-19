@@ -1,0 +1,33 @@
+class_name Enums
+extends RefCounted
+## 游戏枚举与常量：形态、动作、情绪等。
+const FORM_HUMANOID := "humanoid"
+const FORM_BESTIAL := "bestial"
+const FORM_GEOMETRIC := "geometric"
+const FORM_FLUID := "fluid"
+
+const ACTION_MOVE_TO := "move_to"
+const ACTION_GATHER := "gather"
+const ACTION_TALK_TO := "talk_to"
+const ACTION_CRAFT := "craft"
+const ACTION_BUILD := "build"
+const ACTION_REST := "rest"
+const ACTION_EAT := "eat"
+const ACTION_ATTACK := "attack"
+const ACTION_FLEE := "flee"
+const ACTION_PRAY := "pray"
+const ACTION_MEDITATE := "meditate"
+const ACTION_USE_ITEM := "use_item"
+
+const EMOTIONS := ["curiosity", "fear", "joy", "anger", "sadness", "love", "awe", "peace", "anxiety", "gratitude"]
+
+const BIOME_NAMES := ["翠风平原", "金沙荒原", "幽蓝湿地", "紫雾密林", "墨玉山脉", "辉晶遗迹"]
+
+const ROLE_NAMES := {
+	"explorer": "流浪者",
+	"gatherer": "采集者",
+	"builder": "建造者",
+	"scholar": "学者",
+	"priest": "祭司",
+	"guard": "护卫"
+}
