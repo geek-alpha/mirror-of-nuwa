@@ -107,7 +107,8 @@ func set_anim_state(new_state: String) -> void:
 func _process(delta: float) -> void:
 	if skeleton == null:
 		return
-	anim_time += delta * maxf(move_speed / 4.0, 0.25)
+	# 步频随速度，但设上限：异常速度（冲刺/击飞）不会让摆动抽筋
+	anim_time += delta * clampf(move_speed / 4.0, 0.25, 2.5)
 	var rot: Dictionary = {}
 	var pos: Dictionary = {}
 	var freq := 5.0
@@ -170,13 +171,20 @@ func _process(delta: float) -> void:
 			rot["head"] = Quaternion(Vector3.RIGHT, 0.15)
 		_:
 			pass
-	_apply_pose(rot, pos)
+	_apply_pose(rot, pos, delta)
 
-func _apply_pose(rot: Dictionary, pos: Dictionary) -> void:
-	skeleton.reset_bone_poses()
+func _apply_pose(rot: Dictionary, pos: Dictionary, delta: float) -> void:
+	# 指数收敛（时间常数 0.1s）：状态切换不再瞬间跳变，且与帧率无关——
+	# clampf(10*delta) 写法在掉帧（delta≥0.1）时会饱和成瞬跳
+	var k := 1.0 - exp(-10.0 * delta)
 	for bone_name in bone_ids:
 		var idx: int = bone_ids[bone_name]
+		var rest: Transform3D = skeleton.get_bone_rest(idx)
+		var target_q: Quaternion = rest.basis.get_rotation_quaternion()
 		if rot.has(bone_name):
-			skeleton.set_bone_pose_rotation(idx, rot[bone_name])
+			target_q = rot[bone_name]
+		skeleton.set_bone_pose_rotation(idx, skeleton.get_bone_pose_rotation(idx).slerp(target_q, k))
+		var target_p: Vector3 = rest.origin
 		if pos.has(bone_name):
-			skeleton.set_bone_pose_position(idx, pos[bone_name])
+			target_p = pos[bone_name]
+		skeleton.set_bone_pose_position(idx, skeleton.get_bone_pose_position(idx).lerp(target_p, k))

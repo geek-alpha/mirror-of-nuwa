@@ -3,6 +3,12 @@ extends Node3D
 ## 自由模拟：硅基文明沙盘；剧情模式：三体游戏（自动化身历史人物推动文明）。
 
 func _ready() -> void:
+	if AutoPilot != null:
+		# 开局界面勾选自动模式时，进入剧情后自动接管
+		AutoPilot.set_enabled(
+			bool(ConfigManager.game_setting("auto_pilot_enabled", false)) and GameState.is_story_mode(),
+			true
+		)
 	if GameState.is_story_mode():
 		StoryModeManager.start_story($World)
 	else:

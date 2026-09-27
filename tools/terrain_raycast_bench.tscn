@@ -1,0 +1,9 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://tools/terrain_raycast_bench.gd" id="1_bench"]
+[ext_resource type="PackedScene" path="res://scenes/world.tscn" id="2_world"]
+
+[node name="TerrainRaycastBench" type="Node"]
+script = ExtResource("1_bench")
+
+[node name="World" parent="." instance=ExtResource("2_world")]

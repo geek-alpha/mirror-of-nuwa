@@ -28,6 +28,10 @@ var tts_provider_opt: OptionButton
 var start_btn: Button
 var player_name_edit: LineEdit
 var start_era_opt: OptionButton
+var auto_pilot_check: CheckButton
+var view_opt: OptionButton
+var view_mode_story := "first"
+var view_mode_free := "third"
 var casting_panel = null
 
 func _ready() -> void:
@@ -107,6 +111,7 @@ func _build_ui() -> void:
 	free_btn.toggled.connect(func(on: bool) -> void:
 		if on:
 			mode_desc.text = FREE_DESC
+			_sync_view_ui(MODE_FREE)
 	)
 	mode_hbox.add_child(free_btn)
 	story_btn = Button.new()
@@ -119,6 +124,7 @@ func _build_ui() -> void:
 	story_btn.toggled.connect(func(on: bool) -> void:
 		if on:
 			mode_desc.text = STORY_DESC
+			_sync_view_ui(MODE_STORY)
 	)
 	mode_hbox.add_child(story_btn)
 	mode_desc = Label.new()
@@ -126,6 +132,22 @@ func _build_ui() -> void:
 	mode_desc.custom_minimum_size = Vector2(0, 58)
 	mode_desc.modulate = Color(0.9, 0.93, 1.0)
 	vbox.add_child(mode_desc)
+
+	vbox.add_child(_section_label("默认视角"))
+	var view_row := HBoxContainer.new()
+	view_row.add_theme_constant_override("separation", 10)
+	vbox.add_child(view_row)
+	view_row.add_child(_field_label("进入游戏后的默认人称（当前所选模式）"))
+	view_opt = OptionButton.new()
+	view_opt.add_item("第一人称")
+	view_opt.add_item("第三人称")
+	view_opt.custom_minimum_size = Vector2(140, 0)
+	view_row.add_child(view_opt)
+	var view_hint := Label.new()
+	view_hint.text = "剧情模式默认第一人称、自由模拟默认第三人称，可按需修改；游戏内仍可用 V 键（移动端「视角」按钮）随时切换。"
+	view_hint.modulate = Color(0.7, 0.75, 0.85)
+	view_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(view_hint)
 
 	vbox.add_child(_section_label("剧情模式 · 你的名字"))
 	var name_row := HBoxContainer.new()
@@ -153,6 +175,16 @@ func _build_ui() -> void:
 		start_era_opt.set_item_metadata(idx, str(era.get("id", "")))
 		idx += 1
 	era_row.add_child(start_era_opt)
+
+	vbox.add_child(_section_label("剧情模式 · 自动模式"))
+	auto_pilot_check = CheckButton.new()
+	auto_pilot_check.text = "启用自动模式（自动探索 / 攻略 AI 角色 / 最优抉择）"
+	vbox.add_child(auto_pilot_check)
+	var auto_hint := Label.new()
+	auto_hint.text = "自动模式下系统代打：自动前往灯塔与遗宝探索、选择得分最高的对话选项、酷热时自动脱水保命，并主动与历史人物交谈提升好感（交谈时边走边聊、偶尔回望，不站桩）；游戏内可随时开关。"
+	auto_hint.modulate = Color(0.7, 0.75, 0.85)
+	auto_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(auto_hint)
 
 	vbox.add_child(_section_label("全局配置"))
 	var row1 := HBoxContainer.new()
@@ -257,6 +289,11 @@ func _prefill() -> void:
 	player_name_edit.text = str(ConfigManager.game_setting("player_name", ""))
 	if player_name_edit.text.strip_edges() == "":
 		player_name_edit.text = "旅人"
+	auto_pilot_check.button_pressed = bool(ConfigManager.game_setting("auto_pilot_enabled", false))
+	view_mode_story = _normalize_view_mode(str(ConfigManager.game_setting("view_mode_story", "first")))
+	view_mode_free = _normalize_view_mode(str(ConfigManager.game_setting("view_mode_free", "third")))
+	var active_mode := MODE_STORY if GameState.game_mode == MODE_STORY else MODE_FREE
+	view_opt.select(0 if (view_mode_story if active_mode == MODE_STORY else view_mode_free) == "first" else 1)
 	var want_era := str(ConfigManager.game_setting("story_start_era", "random"))
 	var era_found := false
 	for i in start_era_opt.item_count:
@@ -274,13 +311,21 @@ func _prefill() -> void:
 		mode_desc.text = FREE_DESC
 
 func _on_start() -> void:
+	# 把当前选择的默认人称存回所选模式
+	if story_btn.button_pressed:
+		view_mode_story = "first" if view_opt.selected == 0 else "third"
+	else:
+		view_mode_free = "first" if view_opt.selected == 0 else "third"
 	ConfigManager.save_game_settings({
 		"character_count": int(char_count.value),
 		"time_scale_default": TIME_SCALES[maxi(time_scale_opt.selected, 0)],
 		"world_seed": int(world_seed.value),
 		"story_world_seed": int(world_seed.value),
 		"story_start_era": str(start_era_opt.get_item_metadata(maxi(start_era_opt.selected, 0))),
-		"player_name": player_name_edit.text.strip_edges()
+		"player_name": player_name_edit.text.strip_edges(),
+		"auto_pilot_enabled": auto_pilot_check.button_pressed,
+		"view_mode_story": view_mode_story,
+		"view_mode_free": view_mode_free
 	})
 	var pname := player_name_edit.text.strip_edges()
 	GameState.player_name = pname if pname != "" else "旅人"
@@ -319,3 +364,18 @@ func _make_edit(placeholder: String) -> LineEdit:
 	if UIManager != null:
 		UIManager.wire_virtual_keyboard(edit)
 	return edit
+
+func _sync_view_ui(mode: String) -> void:
+	## 模式切换时：把当前选择存回原模式，再显示新模式已保存的默认视角
+	if view_opt == null:
+		return
+	var leaving := MODE_STORY if story_btn.button_pressed else MODE_FREE
+	if leaving == MODE_STORY:
+		view_mode_story = "first" if view_opt.selected == 0 else "third"
+	else:
+		view_mode_free = "first" if view_opt.selected == 0 else "third"
+	var saved := view_mode_story if mode == MODE_STORY else view_mode_free
+	view_opt.select(0 if saved == "first" else 1)
+
+func _normalize_view_mode(value: String) -> String:
+	return "third" if value == "third" else "first"

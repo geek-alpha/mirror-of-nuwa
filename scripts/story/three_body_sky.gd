@@ -94,6 +94,7 @@ var _heat_particles: CPUParticles3D = null
 var _snow_particles: CPUParticles3D = null
 var _ash_particles: CPUParticles3D = null
 var _revival_particles: CPUParticles3D = null
+var _lorenz: LorenzAttractor = null
 
 func setup(world_node: Node3D, story_props := true) -> void:
 	story_props_enabled = story_props
@@ -145,7 +146,17 @@ func setup(world_node: Node3D, story_props := true) -> void:
 	if story_props_enabled:
 		_build_ground_geometry()
 	_build_weather_particles()
+	_spawn_lorenz()
 	set_state(State.STABLE)
+
+## 混沌蝴蝶：天空中的洛伦茨吸引子丝带——三日世界混沌本质的化身。
+## 它永远盘旋、永不自交、永不重复，仿佛三体问题本身。
+func _spawn_lorenz() -> void:
+	_lorenz = LorenzAttractor.new()
+	_lorenz.name = "LorenzButterfly"
+	_lorenz.setup(Vector3(150, 118, 70), 26.0, Color(0.95, 0.9, 1.0), 1.0)
+	_lorenz.rotation_degrees = Vector3(-16, 0, 0)
+	add_child(_lorenz)
 
 ## 纪元大气特效：酷热的热浪火星、严寒的飞雪、毁灭的灰烬
 func _build_weather_particles() -> void:
@@ -534,7 +545,57 @@ func spawn_era_props(era_id: String) -> void:
 			_spawn_obelisk(Vector3(-46, 0, 42))
 			_spawn_light_pillar(Vector3(-44, 0, 36), glow)
 	spawn_ambient_motes(center, glow)
+	_spawn_math_visuals(era_id)
 	spawn_starfield()
+
+## 高等数学 × 物理学之美：每个文明专属的科学奇观（五纪五物，互不复用）
+func _spawn_math_visuals(era_id: String) -> void:
+	match era_id:
+		"era_wenwang":
+			_spawn_kepler_dial()
+		"era_mozi":
+			_spawn_fourier_epicycle()
+		"era_qinshihuang":
+			_spawn_bifurcation_tree()
+		"era_newton":
+			_spawn_orbit_ribbons()
+		"era_einstein":
+			_spawn_spacetime_grid()
+
+## 周文王纪：开普勒等面积日晷——以行星为原点实时记录三太阳的极坐标轨道
+func _spawn_kepler_dial() -> void:
+	var dial := KeplerDial.new()
+	dial.name = "KeplerDial"
+	dial.setup(self, Vector3(24, 0, 2))
+	add_child(dial)
+
+## 墨子纪：傅里叶本轮齿轮仪——嵌套齿轮用旋转叠加画出玫瑰
+func _spawn_fourier_epicycle() -> void:
+	var epi := FourierEpicycle.new()
+	epi.name = "FourierEpicycle"
+	epi.setup(Vector3(14, 0, 4))
+	add_child(epi)
+
+## 冯·诺伊曼纪：Logistic 分岔之树——周期加倍通向混沌的谱系
+func _spawn_bifurcation_tree() -> void:
+	var tree := BifurcationTree.new()
+	tree.name = "BifurcationTree"
+	tree.setup(Vector3(4, 0, 10), Vector3(0, 0, -1))
+	add_child(tree)
+
+## 牛顿纪：三体轨道丝带 + 庞加莱截面——把真实轨道搬进太阳系仪
+func _spawn_orbit_ribbons() -> void:
+	var orbit := OrbitRibbons.new()
+	orbit.name = "OrbitRibbons"
+	orbit.setup(self, Vector3(-2, 0, -16))
+	add_child(orbit)
+
+## 爱因斯坦纪：时空曲率织锦——引力井把光弯成围绕质量的光环
+func _spawn_spacetime_grid() -> void:
+	var grid := SpacetimeGrid.new()
+	grid.name = "SpacetimeGrid"
+	grid.setup(Vector3(-38, 0, 30))
+	add_child(grid)
 
 ## 古老文明 × 科技：石柱 + 发光符文带 + 冲天光柱
 func _spawn_light_pillar(pos: Vector3, glow: Color) -> void:
@@ -872,6 +933,37 @@ func nearest_sun_position() -> Vector3:
 			best = sun.global_position
 	return best
 
+# ---------- 轨道读取 API（供各纪元的数学/物理可视化节点取用） ----------
+
+## 当前三颗恒星的抽象轨道坐标（原点即行星），只读拷贝
+func get_orbit_positions() -> Array[Vector2]:
+	return _pos2.duplicate()
+
+func get_world_rot() -> float:
+	return _world_rot
+
+func get_masses() -> Array:
+	return _masses.duplicate()
+
+## 最近（对行星威胁最大）的恒星下标
+func get_nearest_sun_index() -> int:
+	var best := -1
+	var best_r := INF
+	for i in 3:
+		var r := _pos2[i].length()
+		if r < best_r:
+			best_r = r
+			best = i
+	return best
+
+## 把抽象轨道坐标映射到世界空间：与天空方向的旋转/倾斜完全一致（同一套天球变换），
+## 但保留径向距离并按 scale 缩放——供“太阳系仪”把真实轨道搬进地面模型。
+func orbit_to_world(p: Vector2, scale: float) -> Vector3:
+	var d := Vector3(p.x, p.y * _tilt_cos, p.y * _tilt_sin)
+	var c := cos(_world_rot)
+	var s := sin(_world_rot)
+	return Vector3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c) * scale
+
 ## 依据三体模拟的真实日位判定天象：
 ## 三颗太阳同时当空 = 三日凌空（毁灭），两颗 = 双日凌空（乱纪元前兆）。
 func current_conjunction() -> String:
@@ -943,6 +1035,18 @@ func _process(delta: float) -> void:
 	_apply_targets(clampf(delta * 2.5, 0.0, 1.0))
 	_tick_weather_particles()
 	_follow_particle_anchor()
+	if _lorenz != null:
+		var chaos := 0.0
+		match state:
+			State.HOT:
+				chaos = 0.55
+			State.COLD:
+				chaos = 0.35
+			State.DESTROYED:
+				chaos = 1.0
+		if _triple_override_active:
+			chaos = maxf(chaos, 0.8)
+		_lorenz.boost(chaos)
 	if auto_era:
 		_tick_auto_era(delta)
 	if _pulse > 0.0:

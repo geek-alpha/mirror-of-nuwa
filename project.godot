@@ -12,6 +12,7 @@ config/force_mobile_controls=false
 
 ConfigManager="*res://scripts/autoload/config_manager.gd"
 EventBus="*res://scripts/autoload/event_bus.gd"
+ModelLoader="*res://scripts/autoload/model_loader.gd"
 GameState="*res://scripts/autoload/game_state.gd"
 TimeManager="*res://scripts/autoload/time_manager.gd"
 WorldManager="*res://scripts/autoload/world_manager.gd"
@@ -29,6 +30,7 @@ UIManager="*res://scripts/autoload/ui_manager.gd"
 SaveManager="*res://scripts/autoload/save_manager.gd"
 TTSManager="*res://scripts/autoload/tts_manager.gd"
 StoryModeManager="*res://scripts/autoload/story_mode_manager.gd"
+AutoPilot="*res://scripts/autoload/auto_pilot.gd"
 
 [display]
 

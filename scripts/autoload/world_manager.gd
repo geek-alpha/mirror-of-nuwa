@@ -56,6 +56,10 @@ func _clear_container(container_name: String) -> void:
 		return
 	var container := world.get_node(container_name)
 	for child in container.get_children():
+		# 立即移出场景树再释放：重建世界时若沿用 queue_free，旧对象与同帧新建对象共存一帧，
+		# 物理/渲染负载翻倍造成卡顿
+		if child.get_parent() != null:
+			child.get_parent().remove_child(child)
 		child.queue_free()
 
 func _spawn_decorations(theme: Dictionary = {}, objective_points: Array = []) -> void:

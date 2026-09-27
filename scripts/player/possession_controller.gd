@@ -110,14 +110,14 @@ func touch_orbit(relative: Vector2) -> void:
 func snap_view(view: Vector2) -> void:
 	yaw = view.x
 	pitch = clampf(view.y, MIN_PITCH, MAX_PITCH)
-	if first_person and possessed != null and is_instance_valid(possessed):
+	if first_person and possessed != null and is_instance_valid(possessed) and possessed.is_inside_tree():
 		global_position = possessed.global_position + Vector3(0, _current_eye_height(), 0)
 		rotation = Vector3(pitch, yaw, 0.0)
 
 ## 过场自回归交接：立即把机位放到当前视角对应的精确位置（不经过平滑跟随），
 ## 供导演的回归镜头滑向它；第一人称贴眼部，第三人称落在环绕球面并看向腰际焦点。
 func settle_position() -> void:
-	if possessed == null or not is_instance_valid(possessed):
+	if possessed == null or not is_instance_valid(possessed) or not possessed.is_inside_tree():
 		return
 	var pivot := possessed.global_position + Vector3(0, ORBIT_PIVOT_HEIGHT, 0)
 	if first_person:
@@ -164,7 +164,7 @@ func _input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	if GameState.input_locked:
 		return
-	if possessed == null or not is_instance_valid(possessed):
+	if possessed == null or not is_instance_valid(possessed) or not possessed.is_inside_tree():
 		return
 	if first_person:
 		_process_first_person(delta)

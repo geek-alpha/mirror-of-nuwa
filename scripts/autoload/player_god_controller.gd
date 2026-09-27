@@ -10,8 +10,11 @@ const AIR_ACCEL := 8.0
 const MOVE_DECEL := 22.0
 const MAX_WALK := 4.2
 const SPRINT_MULT := 1.5
-const JUMP_VELOCITY := 7.5
-const DOUBLE_JUMP_VELOCITY := 6.6
+## 跳跃初速度：最高点高度 = v²/(2g)，按 sqrt(1.5) 放大后跳跃高度约为原来的 1.5 倍
+const JUMP_VELOCITY := 9.2
+const DOUBLE_JUMP_VELOCITY := 8.1
+## 二段跳的水平冲刺速度：自动模式下向目标方向获得持续位移，爬高同时前进
+const AIR_DASH_SPEED := 8.0
 const MAX_AIR_JUMPS := 1
 const GRAVITY := 22.0
 const TURN_SPEED := 8.0
@@ -19,11 +22,15 @@ const JUMP_BUFFER_TIME := 0.12
 const COYOTE_TIME := 0.12
 const DIALOGUE_STOP_DISTANCE := 3.0
 const DIALOGUE_LEAVE_RADIUS := 5.5
+const MOVE_START_SPEED := 1.2
+const MOVE_STOP_SPEED := 0.6
 
 var _jump_buffer := 0.0
 var _coyote_time := 0.0
 var _air_jumps := 0
 var _footstep_looping := false
+## 移动迟滞状态（同时驱动脚步与动画，避免两处门限各说各话）
+var _moving_latched := false
 ## 移动锁定（剧情用：脱水沉眠时化身无法移动，只能环顾四周）
 var _movement_locked := false
 
@@ -239,9 +246,8 @@ func possess(character: AICharacter, silent := false) -> void:
 	# 相机挂到世界而非角色身上：角色的转身/移动不会带动相机，视角完全独立
 	WorldManager.world.add_child(possession_cam)
 	possession_cam.bind(character)
-	if GameState.is_story_mode():
-		# 剧情模式默认第一人称视角
-		possession_cam.set_first_person(true)
+	# 默认人称由开局面板配置（剧情模式默认第一人称，自由模拟默认第三人称）
+	possession_cam.set_first_person(default_first_person())
 	possession_cam.make_current()
 	GameState.camera = possession_cam
 	GameState.set_mode(GameState.Mode.POSSESS)
@@ -279,7 +285,8 @@ func exit_possession(silent := false) -> void:
 	if _footstep_looping:
 		if AudioManager != null:
 			AudioManager.stop_loop("footstep")
-		_footstep_looping = false
+	_footstep_looping = false
+	_moving_latched = false
 	if god_camera != null:
 		god_camera.current = true
 		GameState.camera = god_camera
@@ -299,6 +306,12 @@ func toggle_view_mode() -> void:
 	if possession_cam != null and is_instance_valid(possession_cam):
 		possession_cam.toggle_view_mode()
 
+## 开局面板配置的默认人称：剧情模式默认第一人称，自由模拟默认第三人称
+func default_first_person() -> bool:
+	var key := "view_mode_story" if GameState.is_story_mode() else "view_mode_free"
+	var fallback := "first" if GameState.is_story_mode() else "third"
+	return str(ConfigManager.game_setting(key, fallback)) == "first"
+
 func _process_possess_mode(delta: float) -> void:
 	var c = GameState.possessed_character
 	if c == null or not is_instance_valid(c) or not c.alive or c.dying:
@@ -306,6 +319,24 @@ func _process_possess_mode(delta: float) -> void:
 		return
 	var typing := UIManager.text_input_active()
 	var input_dir: Vector2 = Vector2.ZERO if _movement_locked else Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	# 自动模式：由 AutoPilot 决定移动方向，角色自动走向目标（灯塔/遗宝/角色）
+	var auto_dir := Vector3.ZERO
+	if AutoPilot != null and AutoPilot.enabled and not _movement_locked:
+		# 边走边聊：对话期间绕对方踱步；平时走向目标
+		auto_dir = AutoPilot.pace_direction(c)
+		if auto_dir == Vector3.ZERO:
+			auto_dir = AutoPilot.move_direction(c)
+	var auto_moving := auto_dir.length_squared() > 0.01
+	if auto_moving:
+		input_dir = Vector2(0.0, -1.0)
+	# 对话时的视线焦点（自动模式：看说话者/搭话对象）
+	var auto_focus := Vector3.ZERO
+	if AutoPilot != null and AutoPilot.enabled and not _movement_locked and not auto_moving:
+		auto_focus = AutoPilot.focus_point()
+	# 边走边聊：移动中偶尔转头看一眼对话对象
+	var auto_glance := Vector3.ZERO
+	if AutoPilot != null and AutoPilot.enabled and not _movement_locked and auto_moving:
+		auto_glance = AutoPilot.glance_point()
 	var player_moving := (not typing) and (not _movement_locked) and input_dir.length_squared() > 0.01
 	# 对话跟随：玩家未操控时自动走近对话对象；玩家操控离开范围则结束对话
 	var dialogue_ctx: Dictionary = UIManager.dialogue_context
@@ -334,14 +365,60 @@ func _process_possess_mode(delta: float) -> void:
 	var wish := Vector3.ZERO
 	if player_moving:
 		wish = forward * -input_dir.y + right * input_dir.x
-	elif partner != null and not _movement_locked:
+	elif partner != null and not _movement_locked and (AutoPilot == null or not AutoPilot.enabled):
 		# 自动跟随对话对象，保持可交谈距离
 		var to_partner: Vector3 = partner.global_position - c.global_position
 		to_partner.y = 0.0
 		if to_partner.length() > DIALOGUE_STOP_DISTANCE:
 			wish = to_partner.normalized()
-	var sprint := (not typing) and Input.is_action_pressed("sprint")
+	if auto_moving:
+		# 慢转向：速度方向与视线都平滑逼近目标方向，转弯呈弧线而非直角
+		var cam := possession_cam
+		var yaw_now := cam.yaw if cam != null and is_instance_valid(cam) else 0.0
+		var fwd := Vector3(-sin(yaw_now), 0.0, -cos(yaw_now))
+		var steer_dir := fwd.lerp(auto_dir, clampf(9.0 * delta, 0.0, 1.0))
+		if steer_dir.length_squared() < 0.0001:
+			steer_dir = auto_dir
+		steer_dir = steer_dir.normalized()
+		wish = steer_dir
+		if cam != null and is_instance_valid(cam):
+			var target_yaw := atan2(-steer_dir.x, -steer_dir.z)
+			if auto_glance != Vector3.ZERO:
+				# 偶尔回望对话对象：视线转向对方，随即回正继续赶路
+				var to_glance: Vector3 = auto_glance - c.global_position
+				to_glance.y = 0.0
+				if to_glance.length_squared() > 0.01:
+					target_yaw = atan2(-to_glance.x, -to_glance.z)
+			cam.yaw = lerp_angle(cam.yaw, target_yaw, clampf(7.0 * delta, 0.0, 1.0))
+			if cam.first_person:
+				if auto_glance != Vector3.ZERO:
+					var to_g: Vector3 = auto_glance - c.global_position
+					var dy: float = to_g.y - 1.5
+					var pitch_target := clampf(atan2(dy, Vector2(to_g.x, to_g.z).length()), cam.MIN_PITCH, cam.MAX_PITCH)
+					cam.pitch = lerp(cam.pitch, pitch_target, clampf(4.5 * delta, 0.0, 1.0))
+				else:
+					cam.pitch = lerp(cam.pitch, 0.0, clampf(5.0 * delta, 0.0, 1.0))
+	elif auto_focus != Vector3.ZERO:
+		# 对话时看着说话对象：镜头与身体都平滑转向对方
+		var cam := possession_cam
+		var to: Vector3 = auto_focus - c.global_position
+		to.y = 0.0
+		if to.length_squared() > 0.01 and cam != null and is_instance_valid(cam):
+			var target_yaw := atan2(-to.x, -to.z)
+			cam.yaw = lerp_angle(cam.yaw, target_yaw, clampf(4.5 * delta, 0.0, 1.0))
+			if cam.first_person:
+				var dy: float = auto_focus.y - (c.global_position.y + 1.5)
+				var pitch_target := clampf(atan2(dy, to.length()), cam.MIN_PITCH, cam.MAX_PITCH)
+				cam.pitch = lerp(cam.pitch, pitch_target, clampf(4.5 * delta, 0.0, 1.0))
+			var body_diff := wrapf(target_yaw - c.rotation.y, -PI, PI)
+			c.rotation.y += clampf(body_diff, -4.0 * delta, 4.0 * delta)
+	var auto_sprint := AutoPilot != null and AutoPilot.enabled and AutoPilot.wants_sprint(c)
+	var sprint := (not typing) and (Input.is_action_pressed("sprint") or auto_sprint)
 	var max_speed := MAX_WALK * (SPRINT_MULT if sprint and player_moving else 1.0)
+	if AutoPilot != null and AutoPilot.enabled and AutoPilot.pacing_active() \
+			and not AutoPilot.pacing_escape(c):
+		# 边走边聊：缓步踱步，不冲刺
+		max_speed *= 0.62
 	# 平滑加减速：地面快速响应，空中更"飘"
 	var accel := MOVE_ACCEL if c.is_on_floor() else AIR_ACCEL
 	if wish.length_squared() > 0.01:
@@ -360,8 +437,13 @@ func _process_possess_mode(delta: float) -> void:
 		_air_jumps = 0
 	else:
 		_coyote_time = maxf(0.0, _coyote_time - delta)
-	if (not typing) and (not _movement_locked) and Input.is_action_just_pressed("jump"):
+	# 自动模式：被障碍物卡住时自动起跳（配合双段跳翻越）
+	var auto_jump := AutoPilot != null and AutoPilot.enabled and AutoPilot.wants_jump()
+	if (not typing) and (not _movement_locked) \
+			and (Input.is_action_just_pressed("jump") or auto_jump):
 		_jump_buffer = JUMP_BUFFER_TIME
+		if auto_jump:
+			AutoPilot.consume_jump()
 	else:
 		_jump_buffer = maxf(0.0, _jump_buffer - delta)
 	if _jump_buffer > 0.0:
@@ -372,37 +454,55 @@ func _process_possess_mode(delta: float) -> void:
 			_coyote_time = 0.0
 			_air_jumps = 0
 		elif _air_jumps < MAX_AIR_JUMPS:
-			# 二段跳：空中再次按跳跃，获得第二次抬升
+			# 二段跳：空中再次按跳跃，获得第二次抬升；
+			# 自动模式同时沿目标方向施加水平冲量（持续位移，配合空中转向）
 			c.velocity.y = DOUBLE_JUMP_VELOCITY
 			_air_jumps += 1
 			_jump_buffer = 0.0
+			if AutoPilot != null and AutoPilot.enabled:
+				var dash := AutoPilot.air_dash_direction()
+				if dash != Vector3.ZERO:
+					c.velocity.x = dash.x * AIR_DASH_SPEED
+					c.velocity.z = dash.z * AIR_DASH_SPEED
 	c.move_and_slide()
-	# 脚步音效：走动时循环、停下即停
+	_footstep_tick(c)
+	_turn_tick(c, wish, delta, auto_moving)
+	_anim_tick(c, sprint)
+
+func _footstep_tick(c) -> void:
+	# 迟滞门限同时驱动脚步与动画状态：两处若各用各的门限，0.6~1.2 速度区间会出现
+	# 「人在跑却没声音」或「站定了脚步还在响」。滞空视为停步，空中不该有脚步声。
 	var hspeed := Vector2(c.velocity.x, c.velocity.z).length()
-	if hspeed > 1.0:
-		if not _footstep_looping:
-			if AudioManager != null:
-				AudioManager.start_loop("footstep", -16.0)
-			_footstep_looping = true
+	if _moving_latched:
+		if hspeed < MOVE_STOP_SPEED or not c.is_on_floor():
+			_moving_latched = false
+	elif hspeed > MOVE_START_SPEED and c.is_on_floor():
+		_moving_latched = true
+	if _moving_latched == _footstep_looping:
+		return
+	_footstep_looping = _moving_latched
+	if AudioManager == null:
+		return
+	if _moving_latched:
+		AudioManager.start_loop("footstep", -16.0)
 	else:
-		if _footstep_looping:
-			if AudioManager != null:
-				AudioManager.stop_loop("footstep")
-			_footstep_looping = false
-	# 角色平滑转向
+		AudioManager.stop_loop("footstep")
+
+func _turn_tick(c, wish: Vector3, delta: float, auto_moving: bool) -> void:
+	# 以恒定角速度转向（不瞬间“啪”地转过去），转身更有分量
 	if wish.length_squared() > 0.01:
 		var target_yaw := atan2(-wish.x, -wish.z)
-		# 以恒定角速度转向（不瞬间“啪”地转过去），转身更有分量
 		var diff := wrapf(target_yaw - c.rotation.y, -PI, PI)
-		var step := TURN_SPEED * delta
+		# 自动模式转身更缓，接近真人跑步转弯的节奏
+		var step := (5.5 if auto_moving else TURN_SPEED) * delta
 		c.rotation.y += clampf(diff, -step, step)
-	# 动画状态
+
+func _anim_tick(c, sprint: bool) -> void:
 	if not c.is_on_floor():
 		c.set_animation_state("jump")
-	elif Vector2(c.velocity.x, c.velocity.z).length() > 1.0:
-		var speed := Vector2(c.velocity.x, c.velocity.z).length()
+	elif _moving_latched:
 		c.set_animation_state("run" if sprint else "walk")
-		c.set_move_speed(speed)
+		c.set_move_speed(Vector2(c.velocity.x, c.velocity.z).length())
 	else:
 		c.set_animation_state("idle")
 		c.set_move_speed(0.0)

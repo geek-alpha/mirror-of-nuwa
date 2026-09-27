@@ -10,6 +10,7 @@ const CASTING_PANEL_SCRIPT := preload("res://scripts/ui/casting_panel.gd")
 signal choice_pressed(index: int)
 signal continue_pressed()
 signal overlay_pressed()
+signal overlay_alt_pressed()
 signal boot_finished()
 signal cinematic_finished()
 signal dehydrate_chosen(do_dehydrate: bool)
@@ -70,7 +71,8 @@ const GUIDE_TEXT := "◆ 你以真实身份进入三体世界，历史人物与�
 	+ "4. 天灾、拒绝脱水、持续的高温与严寒都会累积红色「毁灭进度」——只有恒纪元能让它逐日消退，满格即文明倾覆；\n" \
 	+ "5. 太阳的运行不可预测——灾变与喘息交替无常，文明随时可能在一场无人能料的天变中倾覆；\n" \
 	+ "6. 每个文明都藏着一段「真相碎片」：任务完成且文明进度≥75% 才能收集，集齐五段才能通关；\n" \
-	+ "7. 按 F 可与同伴交谈；剧情模式中你始终扮演自己，无法进入神模式。"
+	+ "7. 按 F 可与同伴交谈；剧情模式中你始终扮演自己，无法进入神模式；\n" \
+	+ "8. 右上角可开启「自动模式」：系统会自动探索灯塔与遗宝、按得分最大化选择对话、酷热时脱水保命，并主动与历史人物交谈提升好感。"
 
 var era_label: Label
 var kind_label: Label
@@ -91,10 +93,15 @@ var narrator_label: Label
 var choices_box: BoxContainer
 var continue_btn: Button
 var pause_btn: Button
+var auto_btn: Button
+var auto_menu_btn: Button
+var auto_status_label: Label
 var overlay: ColorRect
 var overlay_title: Label
 var overlay_text: RichTextLabel
+var overlay_btn_row: HBoxContainer
 var overlay_btn: Button
+var overlay_btn2: Button
 
 var flash_rect: ColorRect
 var boot_overlay: ColorRect
@@ -376,8 +383,35 @@ func _build_ui() -> void:
 	pause_btn.offset_top = 12
 	pause_btn.offset_right = -12
 	pause_btn.offset_bottom = 48
-	pause_btn.pressed.connect(func(): pause_overlay.show())
+	pause_btn.pressed.connect(func():
+		refresh_auto_ui()
+		pause_overlay.show()
+	)
 	add_child(pause_btn)
+
+	# 右上：自动模式开关与状态条
+	auto_btn = Button.new()
+	auto_btn.text = "⚡ 自动：关"
+	auto_btn.anchor_left = 1.0
+	auto_btn.anchor_right = 1.0
+	auto_btn.offset_left = -222
+	auto_btn.offset_top = 12
+	auto_btn.offset_right = -120
+	auto_btn.offset_bottom = 48
+	auto_btn.pressed.connect(_toggle_auto)
+	add_child(auto_btn)
+	auto_status_label = Label.new()
+	auto_status_label.anchor_left = 1.0
+	auto_status_label.anchor_right = 1.0
+	auto_status_label.offset_left = -640
+	auto_status_label.offset_top = 52
+	auto_status_label.offset_right = -12
+	auto_status_label.offset_bottom = 74
+	auto_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	auto_status_label.modulate = Color(0.55, 0.95, 1.0)
+	auto_status_label.add_theme_font_size_override("font_size", 13)
+	auto_status_label.hide()
+	add_child(auto_status_label)
 
 	# ---------- 底部：紧凑叙事条（可折叠，不遮挡视线） ----------
 	_narrator = PanelContainer.new()
@@ -896,6 +930,8 @@ func _build_ui() -> void:
 	)
 	pace_row.add_child(pace_opt)
 	pm_vbox.add_child(_make_menu_button("操作指南", func(): guide_overlay.show()))
+	auto_menu_btn = _make_menu_button("⚡ 自动模式：关", _toggle_auto)
+	pm_vbox.add_child(auto_menu_btn)
 	pm_vbox.add_child(_make_menu_button("🎭 排片 · 形象与声音", _open_casting))
 	pm_vbox.add_child(_make_menu_button("保存", func(): SaveManager.save_game()))
 	pm_vbox.add_child(_make_menu_button("读取", func(): SaveManager.load_game()))
@@ -977,10 +1013,18 @@ func _build_ui() -> void:
 	overlay_text.custom_minimum_size = Vector2(540, 200)
 	overlay_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	ovbox.add_child(overlay_text)
+	overlay_btn_row = HBoxContainer.new()
+	overlay_btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	overlay_btn_row.add_theme_constant_override("separation", 12)
+	ovbox.add_child(overlay_btn_row)
 	overlay_btn = Button.new()
 	overlay_btn.custom_minimum_size = Vector2(260, 44)
 	overlay_btn.pressed.connect(func(): overlay_pressed.emit())
-	ovbox.add_child(overlay_btn)
+	overlay_btn_row.add_child(overlay_btn)
+	overlay_btn2 = Button.new()
+	overlay_btn2.custom_minimum_size = Vector2(260, 44)
+	overlay_btn2.pressed.connect(func(): overlay_alt_pressed.emit())
+	overlay_btn_row.add_child(overlay_btn2)
 
 func _make_menu_button(text: String, on_press: Callable) -> Button:
 	var b := Button.new()
@@ -1058,8 +1102,34 @@ func _process(delta: float) -> void:
 	_tick_era_fx(delta)
 	if StoryModeManager.active:
 		update_banner(StoryModeManager.era_kind_text(), StoryModeManager.destroyed_count)
+	if AutoPilot != null and AutoPilot.enabled and auto_status_label != null:
+		auto_status_label.text = AutoPilot.status_text()
 	_tick_boot(delta)
 	_tick_cinematic(delta)
+
+## 自动模式开关：右上角按钮与暂停菜单共用
+func _toggle_auto() -> void:
+	if AutoPilot == null:
+		return
+	AutoPilot.set_enabled(not AutoPilot.enabled)
+	refresh_auto_ui()
+
+func refresh_auto_ui() -> void:
+	if AutoPilot == null:
+		return
+	var on := AutoPilot.enabled
+	if auto_btn != null:
+		auto_btn.text = "⚡ 自动：开" if on else "⚡ 自动：关"
+		auto_btn.modulate = Color(1.0, 0.9, 0.5) if on else Color.WHITE
+	if auto_menu_btn != null:
+		auto_menu_btn.text = "⚡ 自动模式：开" if on else "⚡ 自动模式：关"
+	if auto_status_label != null:
+		auto_status_label.visible = on
+		if on:
+			auto_status_label.text = AutoPilot.status_text()
+
+func overlay_visible() -> bool:
+	return overlay != null and overlay.visible
 
 func setup_era(era: Dictionary, destroyed_count: int, truth_value: float, collected_clues: Array) -> void:
 	era_label.text = str(era.get("name", "三体游戏"))
@@ -1284,8 +1354,8 @@ func show_era_complete(text: String, btn_text: String) -> void:
 func show_world_destroyed(reason: String, btn_text: String) -> void:
 	_show_overlay("☀ 世界毁灭", reason, btn_text)
 
-func show_ending(success: bool, text: String, btn_text: String) -> void:
-	_show_overlay("三体游戏 · 通关" if success else "三体游戏 · 终局", text, btn_text)
+func show_ending(success: bool, text: String, btn_text: String, btn2_text := "") -> void:
+	_show_overlay("三体游戏 · 通关" if success else "三体游戏 · 终局", text, btn_text, btn2_text)
 
 func hide_overlay() -> void:
 	_hide_overlay()
@@ -1324,6 +1394,14 @@ func _on_choice(index: int) -> void:
 func _clear_choices() -> void:
 	for child in choices_box.get_children():
 		child.queue_free()
+
+## 自动模式代选后收起选项面板，避免残留按钮让人误以为没有选择
+func dismiss_choice_panel() -> void:
+	_clear_choices()
+	continue_btn.hide()
+	_narrator_enabled = false
+	if _narrator != null:
+		_fade_out_narrator()
 
 ## 字幕过渡式收尾：淡出后隐藏，而非瞬间消失
 func _hide_subtitle_fade() -> void:
@@ -1687,7 +1765,7 @@ func show_milestone(title: String, line: String, color: Color) -> void:
 func _hide_milestone() -> void:
 	milestone_panel.hide()
 
-func _show_overlay(title: String, text: String, btn_text: String) -> void:
+func _show_overlay(title: String, text: String, btn_text: String, btn2_text := "") -> void:
 	# 终结/阶段覆盖层出现时清掉背后的剧情 HUD（信息卡/任务卡/事件流/菜单/叙事条/
 	# 横幅/里程碑等），让结束画面与开局一样简洁
 	set_hud_visible(false)
@@ -1699,6 +1777,8 @@ func _show_overlay(title: String, text: String, btn_text: String) -> void:
 	overlay_title.text = title
 	overlay_text.text = text
 	overlay_btn.text = btn_text
+	overlay_btn2.text = btn2_text
+	overlay_btn2.visible = btn2_text.strip_edges() != ""
 	overlay.show()
 
 func _hide_overlay() -> void:

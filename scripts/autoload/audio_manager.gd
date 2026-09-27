@@ -72,7 +72,7 @@ func play_3d(name: String, world_pos: Vector3, volume_db := 0.0) -> void:
 	)
 	p.play()
 
-func start_loop(name: String, volume_db := -18.0) -> void:
+func start_loop(name: String, volume_db := -18.0, fade := 0.2) -> void:
 	var stream := _stream(name)
 	if stream == null:
 		return
@@ -83,18 +83,37 @@ func start_loop(name: String, volume_db := -18.0) -> void:
 	p.stream = stream
 	p.volume_db = volume_db
 	p.finished.connect(func() -> void:
-		if is_instance_valid(p):
+		if is_instance_valid(p) and not p.has_meta("fading"):
 			p.play()
 	)
 	add_child(p)
 	_loops[name] = p
+	if fade > 0.0:
+		# 起步淡入：避免循环音硬起的突兀感
+		p.volume_db = -50.0
+		var tw := create_tween()
+		tw.tween_property(p, "volume_db", volume_db, fade)
 	p.play()
 
-func stop_loop(name: String) -> void:
+func stop_loop(name: String, fade := 0.25) -> void:
 	if _loops.has(name) and is_instance_valid(_loops[name]):
-		_loops[name].stop()
-		_loops[name].queue_free()
-	_loops.erase(name)
+		var p: AudioStreamPlayer = _loops[name]
+		_loops.erase(name)
+		if fade <= 0.0:
+			p.stop()
+			p.queue_free()
+			return
+		# 停步淡出后销毁：中途再次起步会新建播放器，不断档
+		p.set_meta("fading", true)
+		var tw := create_tween()
+		tw.tween_property(p, "volume_db", -50.0, fade)
+		tw.tween_callback(func() -> void:
+			if is_instance_valid(p):
+				p.stop()
+				p.queue_free()
+		)
+	else:
+		_loops.erase(name)
 
 func stop_all_loops() -> void:
 	for key in _loops.keys():

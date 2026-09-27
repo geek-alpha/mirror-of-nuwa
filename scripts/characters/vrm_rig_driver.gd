@@ -119,16 +119,19 @@ func _prepare_arm_rig() -> void:
 		var abduct := deg_to_rad(ARM_ABDUCT_DEG)
 		theta -= abduct if arm_role == "arm_l" else -abduct
 		if absf(theta) > 0.12:
-			_arm_drop_q[arm_role] = Quaternion(arm_rest.basis.inverse() * Vector3.BACK, theta)
+			_arm_drop_q[arm_role] = Quaternion((arm_rest.basis.inverse() * Vector3.BACK).normalized(), theta)
 		# 前臂弯曲轴：在休息坐标系中，对应“放下后全局侧向轴”的方向
 		var drop_global := Quaternion(Vector3.BACK, theta)
-		_elbow_axes[forearm_role] = ((drop_global * Quaternion(forearm_rest.basis)).inverse() * Vector3.RIGHT).normalized()
+		# 骨骼 rest 带 1.01 级缩放，Basis 直接转 Quaternion 会报 “must be normalized”
+		_elbow_axes[forearm_role] = ((drop_global * Quaternion(forearm_rest.basis.get_rotation_quaternion())).inverse() * Vector3.RIGHT).normalized()
 
 func _arm_pose(arm_role: String, swing: float) -> Quaternion:
 	if not bone_ids.has(arm_role):
 		return Quaternion.IDENTITY
 	var rest := skeleton.get_bone_global_rest(int(bone_ids[arm_role]))
-	var swing_q := Quaternion(rest.basis.inverse() * Vector3.RIGHT, swing)
+	# rest.basis 可能带缩放（VRM 骨骼常带 1.01 级别缩放），逆变换后轴长 ≠ 1，
+	# 不归一化会让 Quaternion() 每帧报 “axis must be normalized” 并算错旋转
+	var swing_q := Quaternion((rest.basis.inverse() * Vector3.RIGHT).normalized(), swing)
 	var drop_q: Quaternion = _arm_drop_q.get(arm_role, Quaternion.IDENTITY)
 	return swing_q * drop_q
 
@@ -143,7 +146,8 @@ func set_anim_state(new_state: String) -> void:
 func _process(delta: float) -> void:
 	if skeleton == null or not enabled:
 		return
-	anim_time += delta * maxf(move_speed / 4.0, 0.25)
+	# 步频随速度，但设上限：异常速度（冲刺/击飞）不会让摆动抽筋
+	anim_time += delta * clampf(move_speed / 4.0, 0.25, 2.5)
 	var rot: Dictionary = {}
 	var pos: Dictionary = {}
 	match state:
@@ -215,7 +219,7 @@ func _process(delta: float) -> void:
 			rot["forearm_r"] = _elbow_pose("forearm_r", ELBOW_BEND + 0.15)
 		_:
 			pass
-	_apply_pose(rot, pos)
+	_apply_pose(rot, pos, delta)
 
 func _swing_pose(rot: Dictionary, freq: float, amp_leg: float, amp_arm: float, elbow: float) -> void:
 	var s := sin(anim_time * freq)
@@ -229,67 +233,29 @@ func _swing_pose(rot: Dictionary, freq: float, amp_leg: float, amp_arm: float, e
 	rot["forearm_l"] = _elbow_pose("forearm_l", elbow)
 	rot["forearm_r"] = _elbow_pose("forearm_r", elbow)
 
-func _apply_pose(rot: Dictionary, pos: Dictionary) -> void:
-	skeleton.reset_bone_poses()
+func _apply_pose(rot: Dictionary, pos: Dictionary, delta: float) -> void:
+	# 指数收敛（时间常数 0.1s）：状态切换不再瞬间跳变，且与帧率无关——
+	# clampf(10*delta) 写法在掉帧（delta≥0.1）时会饱和成瞬跳
+	var k := 1.0 - exp(-10.0 * delta)
 	for role in bone_ids:
 		var idx: int = bone_ids[role]
+		var rest: Transform3D = skeleton.get_bone_rest(idx)
+		var target_q: Quaternion = rest.basis.get_rotation_quaternion()
 		if rot.has(role):
 			var q: Quaternion = rot[role]
 			if _rest_compensation.has(role):
 				q = _rest_compensation[role] * q
-			skeleton.set_bone_pose_rotation(idx, q)
+			target_q = q
+		skeleton.set_bone_pose_rotation(idx, skeleton.get_bone_pose_rotation(idx).slerp(target_q, k))
+		var target_p: Vector3 = rest.origin
 		if pos.has(role):
-			skeleton.set_bone_pose_position(idx, pos[role])
+			target_p = pos[role]
+		skeleton.set_bone_pose_position(idx, skeleton.get_bone_pose_position(idx).lerp(target_p, k))
 
 ## 从 GLB 容器的 JSON 块读取 VRM humanoid 骨骼映射（bone 语义 -> 节点名）。
+## 同一路径只读一次文件，结果由 ModelLoader 缓存，供多个角色复用。
 func _read_vrm_humanoid_mapping(path: String) -> Dictionary:
-	var f := FileAccess.open(path, FileAccess.READ)
-	if f == null:
-		return {}
-	if f.get_length() < 28:
-		f.close()
-		return {}
-	f.seek(12)
-	var chunk_len := f.get_32()
-	var type_bytes := f.get_buffer(4)
-	if type_bytes.get_string_from_ascii() != "JSON":
-		f.close()
-		return {}
-	var json_bytes := f.get_buffer(chunk_len)
-	f.close()
-	var data = JSON.parse_string(json_bytes.get_string_from_utf8())
-	if not (data is Dictionary):
-		return {}
-	var nodes: Array = data.get("nodes", [])
-	var ext: Dictionary = data.get("extensions", {})
-	var out := {}
-	var ext_obj: Variant = null
-	if ext.has("VRM"):
-		ext_obj = ext["VRM"]
-	elif ext.has("VRMC_vrm"):
-		ext_obj = ext["VRMC_vrm"]
-	if not (ext_obj is Dictionary):
-		return out
-	var humanoid: Variant = (ext_obj as Dictionary).get("humanoid", {})
-	var hb: Variant = {}
-	if humanoid is Dictionary:
-		hb = (humanoid as Dictionary).get("humanBones", {})
-	if hb is Array:
-		# 列表格式：[{"bone": "hips", "node": 14}, ...]（VRM 0.x 常见导出）
-		for entry in hb:
-			if entry is Dictionary and (entry as Dictionary).has("bone") and (entry as Dictionary).has("node"):
-				var idx := int((entry as Dictionary)["node"])
-				if idx >= 0 and idx < nodes.size():
-					out[str((entry as Dictionary)["bone"])] = str(nodes[idx].get("name", ""))
-	elif hb is Dictionary:
-		# 对象格式：{"hips": {"node": 14}, ...}（VRM 1.0）
-		for key in hb:
-			var entry = hb[key]
-			if entry is Dictionary and entry.has("node"):
-				var idx := int(entry["node"])
-				if idx >= 0 and idx < nodes.size():
-					out[key] = str(nodes[idx].get("name", ""))
-	return out
+	return ModelLoader.vrm_mapping(path)
 
 ## 综合 VRM 映射与候选命名，为每个语义角色解析实际骨骼名。
 func _resolve_bone_names(mapping: Dictionary) -> Dictionary:

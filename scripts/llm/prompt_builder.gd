@@ -178,6 +178,32 @@ static func build_reaction_prompt(state: Dictionary, player_choice: String) -> S
 }""")
 	return "\n".join(lines)
 
+## 自动模式的主动搭话：以玩家（真实人类）口吻生成一句三体世界观的搭话，
+## 再由在场历史人物/同伴（LLM 或规则模板）回应，形成双向 AI 对话。
+static func build_auto_talk_prompt(state: Dictionary, partner_name: String) -> String:
+	var lines: Array[String] = []
+	var player_name := str(state.get("player_name", "旅人"))
+	lines.append("你是《女娲之镜：硅灵文明》剧情模式·三体游戏中戴着 V 装具进入三体世界的真实人类玩家「%s」。" % player_name)
+	lines.append("你正在与历史人物「%s」结伴同行，想主动开口搭话，拉近彼此的关系。" % partner_name)
+	lines.append("")
+	lines.append("## 当前世界状态")
+	lines.append("- 文明：%s" % str(state.get("era_name", "未知文明")))
+	lines.append("- 纪元：%s" % str(state.get("era_kind", "恒纪元")))
+	lines.append("- 天象：%s（当前 %d 颗太阳当空）" % [str(state.get("sky", "太阳隐现")), int(state.get("sun_count", 1))])
+	var favor := str(state.get("favor_text", "")).strip_edges()
+	if favor == "":
+		favor = "尚未熟悉"
+	lines.append("- 你与%s的好感：%s" % [partner_name, favor.split("\n")[0]])
+	lines.append("")
+	lines.append("## 生成要求")
+	lines.append("用一句话主动向%s搭话。内容必须贴合三体世界观：太阳运行不可预测、恒纪元/乱纪元交替、脱水与生存、文明轮回与星空。")
+	lines.append("语气自然真诚，可以带一点好奇或关切；好感越高越亲近。不要说破自己在玩游戏，也不要提及硅灵、晶体、女娲等自由模拟概念，不要重复固定台词。")
+	lines.append("严格返回 JSON，不要输出其他文本：")
+	lines.append("""{
+  "dialogue": "你对%s说的一句搭话"
+}""" % partner_name)
+	return "\n".join(lines)
+
 ## 场景触发角色：同伴/过客在特定场景登场时的台词。
 ## situation: entrance（加入队伍）/ wanderer_treasure / wanderer_chaos / wanderer_milestone
 static func build_scene_character_prompt(state: Dictionary, character_name: String, situation: String) -> String:

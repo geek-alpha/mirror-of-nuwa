@@ -8,6 +8,7 @@ var bio_label: RichTextLabel
 var bio_select: OptionButton
 var filter_select: OptionButton
 var tabs: TabContainer
+var _refresh_dirty := false
 
 func _ready() -> void:
 	anchor_left = 0.5
@@ -83,9 +84,17 @@ func _ready() -> void:
 	bio_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	bio_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	bio_box.add_child(bio_label)
-	refresh()
+	refresh_now()
 
+## 合并刷新：批量事件/刷新请求只触发一次实际重建（延迟到本帧末）。
 func refresh() -> void:
+	if _refresh_dirty:
+		return
+	_refresh_dirty = true
+	refresh_now.call_deferred()
+
+func refresh_now() -> void:
+	_refresh_dirty = false
 	if event_label == null:
 		return
 	# 事件日志
@@ -128,7 +137,7 @@ func _refresh_bio() -> void:
 
 func show_for(character_id: String = "") -> void:
 	visible = true
-	refresh()
+	refresh_now()
 	if character_id != "":
 		for i in bio_select.item_count:
 			if str(bio_select.get_item_metadata(i)) == character_id:

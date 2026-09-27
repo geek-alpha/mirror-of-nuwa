@@ -12,6 +12,8 @@ var story_ui: StoryUI = null
 var _mobile_controls := false
 var dialogue_context: Dictionary = {}
 var _touch_controls_saved_visible := false
+const UI_REFRESH_INTERVAL := 0.2
+var _ui_refresh_accum := 0.0
 
 func _ready() -> void:
 	EventBus.time_scale_changed.connect(func(_s): if time_controls: time_controls.refresh())
@@ -22,12 +24,18 @@ func _ready() -> void:
 	EventBus.game_mode_changed.connect(func(_m): if character_sheet: character_sheet.refresh())
 	get_viewport().gui_focus_changed.connect(_on_gui_focus_changed)
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	# 轮询补漏降到 5Hz（数据变化另有 EventBus 信号即时刷新）；隐藏面板直接跳过
+	_ui_refresh_accum += delta
+	if _ui_refresh_accum < UI_REFRESH_INTERVAL:
+		return
+	# 减去间隔而非清零：清零会让实际周期被 delta 量化拉长，5Hz 漂成 4.x Hz
+	_ui_refresh_accum = minf(_ui_refresh_accum - UI_REFRESH_INTERVAL, UI_REFRESH_INTERVAL)
 	if character_sheet != null and character_sheet.visible:
 		character_sheet.refresh()
-	if god_panel != null:
+	if god_panel != null and god_panel.visible:
 		god_panel.refresh()
-	if time_controls != null:
+	if time_controls != null and time_controls.visible:
 		time_controls.refresh()
 
 func setup() -> void:

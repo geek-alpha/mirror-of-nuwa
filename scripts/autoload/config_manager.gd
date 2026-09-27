@@ -83,7 +83,8 @@ func _default_config() -> Dictionary:
 			"world_seed": 42,
 			"seconds_per_game_hour": 6.0,
 			"character_count": 10,
-			"autosave_interval_game_days": 1
+			"autosave_interval_game_days": 1,
+			"auto_pilot_enabled": false
 		}
 	}
 

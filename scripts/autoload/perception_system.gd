@@ -57,10 +57,14 @@ func nearest_hostile(character) -> AICharacter:
 
 func characters_in_radius(position: Vector3, radius: float, exclude: Array = []) -> Array:
 	var out: Array = []
+	var skip: Dictionary = {}
+	for e in exclude:
+		skip[e] = true
+	var radius_sq := radius * radius
 	for c in CharacterManager.all_characters():
-		if exclude.has(c) or not c.alive or c.dying:
+		if skip.has(c) or not c.alive or c.dying:
 			continue
-		if c.global_position.distance_to(position) <= radius:
+		if c.global_position.distance_squared_to(position) <= radius_sq:
 			out.append(c)
 	return out
 

@@ -104,6 +104,7 @@ func _load_templates() -> void:
 
 func spawn_initial_characters(count: int = -1) -> void:
 	clear_all()
+	HistoryManager.begin_batch()
 	if count < 0:
 		count = int(ConfigManager.game_setting("character_count", 10))
 	var centers := CivilizationManager.faction_centers
@@ -115,6 +116,7 @@ func spawn_initial_characters(count: int = -1) -> void:
 		var center: Vector3 = CivilizationManager.faction_centers.get(fid, Vector3.ZERO)
 		var pos := center + Vector3(randf_range(-8, 8), 0.0, randf_range(-8, 8))
 		_create_random_character(pos, fid)
+	HistoryManager.end_batch()
 
 func create_character(data: CharacterData) -> AICharacter:
 	if WorldManager.world == null:
@@ -228,12 +230,16 @@ func kill_character(character: AICharacter, cause := "") -> void:
 func clear_all() -> void:
 	for cid in characters:
 		var c = characters[cid]
-		if is_instance_valid(c):
+		if is_instance_valid(c) and not c.is_queued_for_deletion():
+			# 立即移出场景树，避免与同帧重建叠加（queue_free 只在帧末释放，会与新增角色共存一帧）
+			if c.get_parent() != null:
+				c.get_parent().remove_child(c)
 			c.queue_free()
 	characters.clear()
 
 func load_characters(data: Array) -> void:
 	clear_all()
+	HistoryManager.begin_batch()
 	for item in data:
 		var cd := CharacterData.from_save_dict(item)
 		# 旧存档升级：无模型或仍指向旧示例模型的角色，随机绑定 VRM
@@ -248,3 +254,4 @@ func load_characters(data: Array) -> void:
 			char.moving = false
 			char.current_action = {}
 			MemorySystem.add_memory(char, "我从沉睡中醒来，世界已经变化。", 0.5, "curiosity", ["awakening"])
+	HistoryManager.end_batch()

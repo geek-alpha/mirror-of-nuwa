@@ -102,6 +102,13 @@ func _process(_delta: float) -> void:
 		480:
 			# 模拟左键点击角色的屏幕位置，验证“点击选中”路径
 			if selection_test_char != null:
+				# 相机贴近角色正上方俯视（视线仅数米）：远景斜俯视时随机生成的建筑/
+				# 资源节点会挡在角色与相机之间，射线先命中它们就变成“点建筑”（按设计
+				# 清空角色选中并 return），断言随之偶发假失败。
+				selection_test_char.global_position = Vector3(0, 10, 0)
+				selection_test_char.velocity = Vector3.ZERO
+				PlayerGodController.god_camera.global_position = Vector3(0, 16, 0.5)
+				PlayerGodController.god_camera.look_at(selection_test_char.global_position + Vector3(0, 1.0, 0), Vector3.UP)
 				var sp := PlayerGodController.god_camera.unproject_position(selection_test_char.global_position + Vector3(0, 1.0, 0))
 				# 真实鼠标事件以窗口（嵌入器）坐标进入引擎，再由引擎转换为视口坐标；
 				# Input.parse_input_event 同样按嵌入器坐标处理，因此这里先转回窗口坐标，

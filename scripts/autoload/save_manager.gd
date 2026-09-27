@@ -5,16 +5,23 @@ const SAVE_DIR := "user://saves"
 var autosave_path := "user://saves/autosave.json"
 var last_save_path := ""
 var autosave_enabled := true
+## 自动存档去重：同一帧/同一天多次触发只写一次档（延迟到帧末执行）
+var _autosave_queued := false
 
 func _ready() -> void:
 	DirAccess.make_dir_recursive_absolute(SAVE_DIR)
 	EventBus.day_changed.connect(_on_day_changed)
 
 func _on_day_changed(_day: int) -> void:
-	if autosave_enabled:
+	if autosave_enabled and not _autosave_queued:
 		var interval := int(ConfigManager.game_setting("autosave_interval_game_days", 1))
 		if TimeManager.get_day() % maxi(interval, 1) == 0:
-			save_game(autosave_path)
+			_autosave_queued = true
+			_flush_autosave.call_deferred()
+
+func _flush_autosave() -> void:
+	_autosave_queued = false
+	save_game(autosave_path)
 
 func save_game(path: String = "") -> bool:
 	if path == "":

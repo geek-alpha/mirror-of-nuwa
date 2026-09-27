@@ -5,6 +5,17 @@ extends Node
 var events: Array = []
 var biographies: Dictionary = {}
 var max_events := 3000
+## 批量记录计数：>0 时暂停逐条广播，end_batch 时补发一次，避免批量生成刷屏级刷新
+var _batch_depth := 0
+
+func begin_batch() -> void:
+	_batch_depth += 1
+
+func end_batch() -> void:
+	if _batch_depth > 0:
+		_batch_depth -= 1
+	if _batch_depth == 0:
+		EventBus.history_updated.emit()
 
 func log_event(type: String, title: String, details: String, character_id: String = "", faction_id: String = "") -> Dictionary:
 	var ev := {
@@ -25,7 +36,8 @@ func log_event(type: String, title: String, details: String, character_id: Strin
 		if not biographies.has(character_id):
 			biographies[character_id] = []
 		biographies[character_id].append(ev)
-	EventBus.history_updated.emit()
+	if _batch_depth == 0:
+		EventBus.history_updated.emit()
 	return ev
 
 func get_events(filter_type: String = "") -> Array:

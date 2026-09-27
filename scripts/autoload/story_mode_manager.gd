@@ -63,6 +63,8 @@ const ENDING_MONUMENT_NORMAL := "石碑立起，文明的知识得以留存。�
 const ENDING_MONUMENT_PARTIAL := "石碑立起，却刻得仓促凌乱。文明消逝了，而你没有真正理解它。\n\n三体游戏失败——重来一次，去收集每一段真相吧。"
 const ENDING_ESCAPE := "引力深井比想象中更深。飞船坠入熔岩，文明没有留下任何知识。\n\n你摘下 V 装具，重新戴好——再来一次？"
 const ENDING_COLLAPSE := "文明在执念中化为灰烬。没有石碑，没有知识，只有太阳的余晖。\n\n你摘下 V 装具，重新戴好——再来一次？"
+## 开局营地随机出生半径：玩家与历史人物在营地附近随机落位，每局/每纪元出生点都不同
+const SPAWN_RANDOM_RADIUS := 10.0
 
 var active := false
 var finished := false
@@ -140,6 +142,8 @@ var _player_spawn_pos := Vector3.ZERO
 var _pending_next_id := ""
 var _pending_end_beat: Dictionary = {}
 var _pending_action := ""
+## 结局覆盖层的备选动作（主按钮之外的第二按钮，如“返回主菜单”）
+var _pending_alt_action := ""
 var _ui_wired := false
 var _needs_begin := false
 var _current_beat_type := ""
@@ -193,6 +197,11 @@ var _wanderer_cooldown := 0.0
 var _pending_wanderer_reason := ""
 var _auto_generation := 0
 var _sentence_generation := 0
+## 自动模式已代玩家提交过本次抉择：防止等待语音期间重复触发
+var _auto_picked := false
+## 纪元预取形象：role -> model_path，与 _spawn_story_character 实际使用保持一致，
+## 确保预取的模型恰好是登场角色用的那一个（随机抽取只发生一次）
+var _prefetched_models: Dictionary = {}
 
 func _ready() -> void:
 	_load_story_data()
@@ -246,6 +255,8 @@ func _entry_era_index() -> int:
 func start_story(world_node: Node3D) -> void:
 	active = true
 	finished = false
+	_pending_action = ""
+	_pending_alt_action = ""
 	_world = world_node
 	_intro_played = false
 	CivilizationManager.initialize_factions()
@@ -282,6 +293,7 @@ func _wire_ui() -> void:
 	story_ui.choice_pressed.connect(_on_choice)
 	story_ui.continue_pressed.connect(_on_continue)
 	story_ui.overlay_pressed.connect(_on_overlay)
+	story_ui.overlay_alt_pressed.connect(_on_overlay_alt)
 	story_ui.boot_finished.connect(_on_boot_finished)
 	story_ui.cinematic_finished.connect(_on_cinematic_finished)
 	story_ui.dehydrate_chosen.connect(_on_dehydrate_chosen)
@@ -332,6 +344,7 @@ func begin_era(era: Dictionary) -> void:
 	_treasures.clear()
 	_treasure_respawn_timer = TREASURE_RESPAWN_TIME
 	_last_favor_text = ""
+	_auto_picked = false
 	progress = clampf(float(era.get("start_progress", 0.5)), 0.0, 1.0)
 	task_complete = false
 	current_beat_id = str(era.get("start_beat", ""))
@@ -344,6 +357,8 @@ func begin_era(era: Dictionary) -> void:
 	objective_complete = false
 	objective_index = 0
 	objective_points = (era.get("objective", {}) as Dictionary).get("points", [])
+	# 过场播完前把登场形象预取到 ModelLoader 缓存，避免苏醒/入队时逐个同步卡顿
+	_prefetch_era_models(era)
 	_spawn_era_characters()
 	_spawn_objective_beacons(0)
 	if sky != null:
@@ -517,7 +532,7 @@ func _spawn_player_for_wake() -> void:
 	player = _spawn_story_character("story_player", {}, _player_spawn_pos, true)
 	if player != null and is_instance_valid(player):
 		PlayerGodController.possess(player)
-		PlayerGodController.possession_cam.set_first_person(true)
+		PlayerGodController.possession_cam.set_first_person(PlayerGodController.default_first_person())
 		PlayerGodController.possession_cam.make_current()
 
 func _start_intro_tour() -> void:
@@ -700,18 +715,47 @@ func _await_director_return(director: CinematicDirector) -> void:
 
 func _spawn_era_characters() -> void:
 	CharacterManager.clear_all()
+	HistoryManager.begin_batch()
 	_story_voices.clear()
 	narrator_voice = ""
 	player = null
 	figure = null
 	companion = null
-	# 开局营地：远离各纪的标志性地标，随剧情慢慢接近
+	# 开局营地：远离各纪的标志性地标，随剧情慢慢接近；
+	# 增加趣味：玩家与历史人物在营地附近随机落位，每局/每纪元出生点都不同
 	var camp := _story_vec3(current_era.get("start_pos", []), _story_pos())
-	_player_spawn_pos = camp
+	_player_spawn_pos = WorldManager.clamp_point(
+		camp + Vector3(randf_range(-SPAWN_RANDOM_RADIUS, SPAWN_RANDOM_RADIUS), 0.0, randf_range(-SPAWN_RANDOM_RADIUS, SPAWN_RANDOM_RADIUS)),
+		0.95
+	)
 	# 玩家化身睁眼后才加载：避免出现在开场巡览动画里，破坏“由外入内”的沉浸感
 	var fig_def: Dictionary = current_era.get("figure", {})
-	figure = _spawn_story_character("story_figure", fig_def, camp + Vector3(3.4, 0, 1.0))
+	var fig_spot := WorldManager.clamp_point(
+		camp + Vector3(randf_range(-SPAWN_RANDOM_RADIUS, SPAWN_RANDOM_RADIUS), 0.0, randf_range(-SPAWN_RANDOM_RADIUS, SPAWN_RANDOM_RADIUS)),
+		0.95
+	)
+	figure = _spawn_story_character("story_figure", fig_def, fig_spot)
+	HistoryManager.end_batch()
 	# 同伴不在开局出现：由剧情节拍（beat["join"]）在旅途中加入
+
+func _prefetch_era_models(era: Dictionary) -> void:
+	## 过场期间预热登场形象：把玩家/向导/同伴要用的模型提前放进 ModelLoader 分帧队列，
+	## 登场时直接命中缓存，杜绝苏醒/入队瞬间的同步解析卡顿。
+	_prefetched_models.clear()
+	var era_id := str(era.get("id", ""))
+	var roles := [
+		[CASTING_ROLE_PLAYER, "any"],
+		[CASTING_ROLE_FIGURE, "male"],
+		[CASTING_ROLE_COMPANION, "male"]
+	]
+	var paths: Array = []
+	for pair in roles:
+		var role: String = str(pair[0])
+		var path := casted_model(era_id, role, str(pair[1]))
+		if path != "":
+			_prefetched_models[role] = path
+			paths.append(path)
+	ModelLoader.preload_scenes(paths)
 
 func _spawn_story_character(character_id: String, def: Dictionary, pos: Vector3, is_player := false):
 	var data := CharacterData.new()
@@ -745,7 +789,9 @@ func _spawn_story_character(character_id: String, def: Dictionary, pos: Vector3,
 	data.age = 45.0
 	data.status = {"energy": 200.0, "health": 100.0, "fatigue": 0.0, "spirit": 100.0}
 	# 排片优先：取排片表中该角色的形象；未安排则按性别从 VRM 池随机
-	var model_path := casted_model(era_id, cast_role, data.sex)
+	var model_path: String = _prefetched_models.get(cast_role, "")
+	if model_path == "":
+		model_path = casted_model(era_id, cast_role, data.sex)
 	if model_path == "":
 		model_path = "res://assets/models/characters/silicat_humanoid.gltf"
 	data.appearance = {
@@ -1001,6 +1047,7 @@ func _tick_objective() -> void:
 func _show_beat(beat_id: String) -> void:
 	_sentence_generation += 1
 	current_beat_id = beat_id
+	_auto_picked = false
 	_pending_end_beat = {}
 	_pending_next_id = ""
 	_current_beat_type = ""
@@ -1451,6 +1498,7 @@ func _complete_task(beat: Dictionary) -> void:
 		else str(current_era.get("completion_text", "文明完成了它的使命。"))
 	story_ui.show_era_complete(completion, "进入下一文明")
 	_pending_action = "advance"
+	_pending_alt_action = ""
 	GameState.input_locked = true
 
 func _try_collect_clue() -> void:
@@ -1489,33 +1537,49 @@ func _handle_ending(ending: String, narration: String) -> void:
 		"monument":
 			_handle_monument_ending(narration)
 		"escape":
-			story_ui.show_ending(false, "%s\n\n%s" % [narration, ENDING_ESCAPE], "文明轮回 · 重新开始")
+			story_ui.show_ending(false, "%s\n\n%s" % [narration, ENDING_ESCAPE], "文明轮回 · 重新开始", "返回主菜单")
 			_pending_action = "rebuild"
+			_pending_alt_action = "menu"
 		"collapse":
-			story_ui.show_ending(false, "%s\n\n%s" % [narration, ENDING_COLLAPSE], "文明轮回 · 重新开始")
+			story_ui.show_ending(false, "%s\n\n%s" % [narration, ENDING_COLLAPSE], "文明轮回 · 重新开始", "返回主菜单")
 			_pending_action = "rebuild"
+			_pending_alt_action = "menu"
 		_:
-			story_ui.show_ending(true, narration, "返回主菜单")
-			_pending_action = "menu"
+			story_ui.show_ending(true, narration, "重新开始", "返回主菜单")
+			_pending_action = "rebuild"
+			_pending_alt_action = "menu"
 	HistoryManager.log_event("story", "三体游戏结局", "%s（%s）" % [ending, narration])
 
 func _handle_monument_ending(narration: String) -> void:
 	if truth >= TRUE_ENDING_MIN_TRUTH:
 		GameState.unlock_achievement("three_body")
-		story_ui.show_ending(true, "%s\n\n%s" % [narration, ENDING_MONUMENT_TRUE], "返回主菜单")
-		_pending_action = "menu"
-	elif truth >= NORMAL_ENDING_MIN_TRUTH:
-		story_ui.show_ending(false, "%s\n\n%s" % [narration, ENDING_MONUMENT_NORMAL], "返回主菜单")
-		_pending_action = "menu"
-	else:
-		story_ui.show_ending(false, "%s\n\n%s" % [narration, ENDING_MONUMENT_PARTIAL], "文明轮回 · 重新开始")
+		story_ui.show_ending(true, "%s\n\n%s" % [narration, ENDING_MONUMENT_TRUE], "重新开始", "返回主菜单")
 		_pending_action = "rebuild"
+		_pending_alt_action = "menu"
+	elif truth >= NORMAL_ENDING_MIN_TRUTH:
+		story_ui.show_ending(false, "%s\n\n%s" % [narration, ENDING_MONUMENT_NORMAL], "重新开始", "返回主菜单")
+		_pending_action = "rebuild"
+		_pending_alt_action = "menu"
+	else:
+		story_ui.show_ending(false, "%s\n\n%s" % [narration, ENDING_MONUMENT_PARTIAL], "文明轮回 · 重新开始", "返回主菜单")
+		_pending_action = "rebuild"
+		_pending_alt_action = "menu"
 
 func _on_overlay() -> void:
 	if not active:
 		return
+	_apply_overlay_action(_pending_action)
+
+## 覆盖层第二按钮：结局画面上的“返回主菜单”等备选动作
+func _on_overlay_alt() -> void:
+	if not active:
+		return
+	var alt := _pending_alt_action
+	_apply_overlay_action(alt if alt != "" else "menu")
+
+func _apply_overlay_action(action: String) -> void:
 	GameState.input_locked = false
-	match _pending_action:
+	match action:
 		"advance":
 			_advance_civilization(false)
 		"destroyed":
@@ -1552,21 +1616,31 @@ func _destroy_world(reason: String) -> void:
 	PlayerGodController.exit_possession()
 	HistoryManager.log_event("story", "世界毁灭 · 第%d次轮回" % destroyed_count, reason)
 	_pending_action = "destroyed"
+	_pending_alt_action = ""
 	_pending_destroy_reason = reason
 	_pending_destroy_overlay = true
 	# 先播放“三日凌空”过场，结束后再弹出毁灭覆盖层
 	_start_cinematic("destroyed", "世界毁灭 · 第%d次轮回" % destroyed_count, reason, transition_duration)
 
 func _advance_civilization(from_destruction: bool) -> void:
+	## 文明轮回/过关换纪：重建整个世界的重活按帧分摊（地形→纪元世界→地标→故事层→角色），
+	## 期间输入锁定（随后由过场/苏醒流程接管），避免单帧重建造成的长卡顿。
 	var next_era: Dictionary = eras[era_index + 1] if era_index + 1 < eras.size() else {}
 	story_ui.hide_overlay()
+	_pending_action = ""
+	_pending_alt_action = ""
+	GameState.input_locked = true
 	PlayerGodController.exit_possession()
 	_clear_story_world()
+	await get_tree().process_frame
 	WorldManager.world_seed = int(next_era.get("seed", randi()))
 	WorldManager.generate_terrain()
+	await get_tree().process_frame
 	WorldManager.spawn_era_world(next_era)
 	_place_era_landmarks(next_era)
+	await get_tree().process_frame
 	_spawn_story_world(next_era)
+	await get_tree().process_frame
 	if era_index + 1 < eras.size():
 		begin_next_era()
 	elif from_destruction:
@@ -1577,6 +1651,9 @@ func _advance_civilization(from_destruction: bool) -> void:
 func _rebuild_world() -> void:
 	## 失败结局后重开：文明轮回按设置重新选择起始文明（随机/指定），真相清零。
 	story_ui.hide_overlay()
+	_pending_action = ""
+	_pending_alt_action = ""
+	GameState.input_locked = true
 	finished = false
 	era_index = _entry_era_index() - 1
 	_intro_played = false
@@ -1585,28 +1662,38 @@ func _rebuild_world() -> void:
 	clues.clear()
 	PlayerGodController.exit_possession()
 	_clear_story_world()
+	await get_tree().process_frame
 	var entry_era: Dictionary = eras[era_index + 1] if not eras.is_empty() else {}
 	WorldManager.world_seed = int(entry_era.get("seed", randi())) if not eras.is_empty() else randi()
 	WorldManager.generate_terrain()
+	await get_tree().process_frame
 	WorldManager.spawn_era_world(entry_era)
 	_place_era_landmarks(entry_era)
+	await get_tree().process_frame
 	_spawn_story_world(entry_era)
+	await get_tree().process_frame
 	begin_next_era()
 
 func _finish_failure(text: String) -> void:
 	finished = true
 	PlayerGodController.exit_possession()
-	story_ui.show_ending(false, text, "文明轮回 · 重新开始")
+	story_ui.show_ending(false, text, "文明轮回 · 重新开始", "返回主菜单")
 	_pending_action = "rebuild"
+	_pending_alt_action = "menu"
 	GameState.input_locked = true
 
 func _clear_story_world() -> void:
 	if AudioManager != null:
 		AudioManager.stop_all_loops()
 	if cinematic_director != null and is_instance_valid(cinematic_director):
+		# 立即移出场景树：与同帧重建世界叠加时，旧对象不必再参与一帧渲染/物理
+		if cinematic_director.get_parent() != null:
+			cinematic_director.get_parent().remove_child(cinematic_director)
 		cinematic_director.queue_free()
 	cinematic_director = null
 	if _story_root != null and is_instance_valid(_story_root):
+		if _story_root.get_parent() != null:
+			_story_root.get_parent().remove_child(_story_root)
 		_story_root.queue_free()
 	_story_root = null
 	sky = null
@@ -1841,6 +1928,8 @@ func return_to_menu() -> void:
 		AudioManager.stop_all_loops()
 	active = false
 	finished = false
+	_pending_action = ""
+	_pending_alt_action = ""
 	era_index = -1
 	destroyed_count = 0
 	current_era = {}
@@ -1861,6 +1950,7 @@ func return_to_menu() -> void:
 	_ai_beat = {}
 	_ai_event_then = Callable()
 	_ai_event_cooldown = 99999.0
+	_auto_picked = false
 	GameState.input_locked = false
 	PlayerGodController.exit_possession()
 	if story_ui != null:
@@ -1871,6 +1961,8 @@ func reset() -> void:
 	_clear_beat_pose()
 	active = false
 	finished = false
+	_pending_action = ""
+	_pending_alt_action = ""
 	era_index = -1
 	destroyed_count = 0
 	current_era = {}
@@ -1896,6 +1988,7 @@ func reset() -> void:
 	_ai_beat = {}
 	_ai_event_then = Callable()
 	_ai_event_cooldown = 99999.0
+	_auto_picked = false
 	GameState.input_locked = false
 	_clear_story_world()
 	PlayerGodController.exit_possession()
@@ -1904,31 +1997,43 @@ func reset() -> void:
 
 # ---------- 纪元轮转、天灾与脱水 ----------
 
+const SLOW_TICK_INTERVAL := 0.2
+var _slow_tick_accum := 0.0
+
+## 驱动权单点：演出（编排/过场/引言/苏醒/跋涉/导演过场）期间角色由演出驱动，
+## 玩家、跟随、场景走位一律暂停，避免互相争夺移动
+func is_presentation_driving() -> bool:
+	return _presentation_busy() \
+		or (cinematic_director != null and is_instance_valid(cinematic_director) \
+			and cinematic_director.active)
+
 func _process(delta: float) -> void:
 	if not active or finished or current_era.is_empty():
 		return
 	if _intro_active or _wake_active or _journey_active:
 		return  # 引言/苏醒/跋涉幕：暂停纪元计时与跟随
 	_tick_era(delta)
-	_tick_conjunction()
+	# 到达/拾取检测留每帧：玩法反馈要即时，降频会被剧情冒烟与玩家同时感知到
 	_tick_objective()
-	var directoring: bool = cinematic_director != null \
-		and is_instance_valid(cinematic_director) \
-		and cinematic_director.active
-	if not directoring:
-		# 演出期间角色由导演驱动，暂停跟随，避免互相争夺移动
-		_tick_followers(delta)
-	_refresh_step()
 	_tick_treasures(delta)
-	_tick_ai_events(delta)
-	_tick_companion_entrance(delta)
-	_tick_wanderer(delta)
-	# 过场期间排队等待的过客：演出结束、恢复游玩后再放行登场
-	if _pending_wanderer_reason != "" and not _presentation_busy():
-		var pending_reason := _pending_wanderer_reason
-		_pending_wanderer_reason = ""
-		_spawn_wanderer(pending_reason)
-	_update_favor_ui()
+	if not is_presentation_driving():
+		# 演出期间角色由演出驱动，暂停跟随，避免互相争夺移动
+		_tick_followers(delta)
+	# 事件/UI/走位类降到 5Hz（传累积 delta，计时精度不变）
+	_slow_tick_accum += delta
+	if _slow_tick_accum >= SLOW_TICK_INTERVAL:
+		_tick_conjunction()
+		_refresh_step()
+		_tick_ai_events(_slow_tick_accum)
+		_tick_companion_entrance(_slow_tick_accum)
+		_tick_wanderer(_slow_tick_accum)
+		# 过场期间排队等待的过客：演出结束、恢复游玩后再放行登场
+		if _pending_wanderer_reason != "" and not _presentation_busy():
+			var pending_reason := _pending_wanderer_reason
+			_pending_wanderer_reason = ""
+			_spawn_wanderer(pending_reason)
+		_update_favor_ui()
+		_slow_tick_accum = 0.0
 
 func _tick_era(delta: float) -> void:
 	if era_kind == EraKind.DESTROYED or booting or dehydrate_pending:
@@ -2461,6 +2566,7 @@ func _show_ai_beat(event: Dictionary, cause: Dictionary) -> void:
 	if _ai_event_then.is_valid():
 		_ai_beat["then"] = _ai_event_then
 		_ai_event_then = Callable()
+	_auto_picked = false
 	_ai_beat_active = true
 	_current_beat_type = "choice"
 	var choice_texts: Array[String] = []
@@ -3156,6 +3262,225 @@ func _despawn_wanderer() -> void:
 func era_kind_text() -> String:
 	return str(ERA_KIND_NAMES.get(era_kind, "恒纪元"))
 
+# ---------- 自动模式辅助接口 ----------
+## 自动模式（AutoPilot）只通过这些公开接口驱动剧情，不直接触碰内部状态。
+
+## 演出进行中：过场/引言/苏醒/跋涉/导演走位期间不移动、不抉择
+func auto_busy() -> bool:
+	return booting or _intro_active or _wake_active or _journey_active or _choreography_active
+
+## 纪元引言幕（背景介绍 + 开始剧情按钮）是否正在等待玩家
+func auto_intro_pending() -> bool:
+	return active and not finished and _intro_active
+
+## 自动跳过引言：等旁白读完后自动点「开始剧情」
+func auto_skip_intro() -> void:
+	if _intro_active:
+		_on_intro_finished()
+
+func auto_dehydrated() -> bool:
+	return dehydrated
+
+func auto_dehydrate_pending() -> bool:
+	return active and not finished and dehydrate_pending
+
+## 自动处理脱水抉择：true=脱水保命（免疫酷热但无法移动），
+## false=拒绝脱水（顶着酷热赶路但骤增毁灭进度）
+func auto_choose_dehydrate(do_dehydrate := true) -> void:
+	if dehydrate_pending:
+		_on_dehydrate_chosen(do_dehydrate)
+
+## 当前是否有等待玩家抉择的剧情选项（剧本节拍或 AI 导演事件）
+func auto_choice_pending() -> bool:
+	if not active or finished or task_complete or auto_busy():
+		return false
+	if _auto_picked:
+		return false
+	if open_story:
+		return _ai_beat_active
+	return _current_beat_type == "choice"
+
+## 自动选择得分最高的选项：进度×100 + 真相×5 + 好感×2 - 危险惩罚
+func auto_choose_best() -> bool:
+	if not auto_choice_pending():
+		return false
+	var choices := auto_current_choices()
+	if choices.is_empty():
+		return false
+	var best := 0
+	var best_score := -INF
+	for i in choices.size():
+		var ch: Dictionary = choices[i]
+		var score := 0.0
+		score += float(ch.get("progress", 0.0)) * 100.0
+		score += float(ch.get("truth", 0.0)) * 5.0
+		score += float(ch.get("affinity", 0.0)) * 2.0
+		# 带危险（天灾）或风险标记的选项会累积毁灭进度，大幅扣分
+		if str(ch.get("danger", "")) != "" or bool(ch.get("risk", false)):
+			score -= 20.0
+		# 能继续推进剧情的选项略微加分，避免停在原地
+		if str(ch.get("next", "")) != "":
+			score += 2.0
+		if score > best_score:
+			best_score = score
+			best = i
+	_auto_picked = true
+	var choice_text := str(choices[best].get("text", ""))
+	_on_choice(best)
+	# 收起选项面板，并让玩家在事件流里看到自动代选了哪一项
+	if story_ui != null:
+		story_ui.dismiss_choice_panel()
+	if UIManager != null and choice_text != "":
+		UIManager.append_system_message("✨ 自动选择：%s" % choice_text)
+	return true
+
+func auto_current_choices() -> Array:
+	if open_story and _ai_beat_active:
+		return _ai_beat.get("choices", [])
+	var beats: Dictionary = current_era.get("beats", {})
+	var beat: Dictionary = beats.get(current_beat_id, {})
+	return beat.get("choices", [])
+
+## 当前抉择对应的对白文本（自动模式据此估算阅读时长）
+func auto_current_choice_text() -> String:
+	if open_story and _ai_beat_active:
+		return str(_ai_beat.get("text", ""))
+	var beats: Dictionary = current_era.get("beats", {})
+	var beat: Dictionary = beats.get(current_beat_id, {})
+	return str(beat.get("text", ""))
+
+## 文明完成/世界毁灭/结局覆盖层是否正在等待点击。
+## 结局画面也算（此时 finished=true，主按钮固定为「重新开始」），自动模式据此自动开启下一轮
+func auto_overlay_pending() -> bool:
+	return active and _pending_action != "" \
+		and story_ui != null and story_ui.overlay_visible()
+
+func auto_continue_overlay() -> void:
+	if auto_overlay_pending():
+		_on_overlay()
+
+## 自动模式用的 AI 事件状态快照（搭话提示词等）
+func auto_event_state(cause := {}) -> Dictionary:
+	return _ai_event_state(cause)
+
+func auto_objective_active() -> bool:
+	return objective_active and not objective_complete and objective_index >= 0 \
+		and objective_index < objective_points.size()
+
+func auto_objective_position() -> Vector3:
+	if not auto_objective_active():
+		return Vector3.ZERO
+	var pt: Dictionary = objective_points[objective_index]
+	var arr: Array = pt.get("pos", [0.0, 0.0, 0.0])
+	return Vector3(float(arr[0]), 0, float(arr[2]))
+
+func auto_objective_label() -> String:
+	if objective_index < 0 or objective_index >= objective_points.size():
+		return ""
+	var pt: Dictionary = objective_points[objective_index]
+	return str(pt.get("label", "目标"))
+
+## 是否只剩最后一个目标灯塔：抵达即完成本纪，之后会立即结算
+func auto_is_last_objective() -> bool:
+	return auto_objective_active() and objective_index >= objective_points.size() - 1
+
+## 最近的遗宝位置（开放剧情寻宝系统）
+func auto_best_treasure_pos(character) -> Vector3:
+	if not open_story or _treasures.is_empty() or character == null \
+			or not is_instance_valid(character):
+		return Vector3.ZERO
+	var best: Vector3 = Vector3.ZERO
+	var best_dist := INF
+	for t in _treasures:
+		var pos: Vector3 = t.get("pos", Vector3.ZERO)
+		var d: float = character.global_position.distance_to(pos)
+		if d < best_dist:
+			best_dist = d
+			best = pos
+	return best
+
+func auto_treasure_count() -> int:
+	return _treasures.size()
+
+func auto_wanderer_position() -> Vector3:
+	if _wanderer != null and is_instance_valid(_wanderer):
+		return _wanderer.global_position
+	return Vector3.ZERO
+
+## 找一个“离得稍远但值得攻略”的角色：好感未满且不在交谈距离内
+func auto_favor_target(character) -> AICharacter:
+	if character == null or not is_instance_valid(character) or character.character_data == null:
+		return null
+	var best: AICharacter = null
+	var best_aff := INF
+	for ch in [figure, companion]:
+		if ch == null or not is_instance_valid(ch) or not ch.alive or ch.character_data == null:
+			continue
+		if character.global_position.distance_to(ch.global_position) < 4.5:
+			continue
+		var aff := RelationshipSystem.get_relationship(ch, character.character_data.id).affinity
+		if aff < 100.0 and aff < best_aff:
+			best_aff = aff
+			best = ch
+	return best
+
+func auto_favor_target_pos(character) -> Vector3:
+	var t = auto_favor_target(character)
+	if t == null:
+		return Vector3.ZERO
+	# 目标点放在对方侧面约 3.8m（按角色 ID 固定方位）：玩家走到可交谈距离即可，
+	# 不会径直撞进对方身体；靠近后由 auto_favor_partner 在 4.5m 内触发搭话
+	var angle := float(abs(hash(str(t.character_data.id))) % 628) / 100.0
+	var off := Vector3(cos(angle), 0.0, sin(angle)) * 3.8
+	return WorldManager.clamp_point(t.global_position + off, 0.0)
+
+func auto_favor_target_name(character) -> String:
+	var t = auto_favor_target(character)
+	return str(t.character_data.name) if t != null and t.character_data != null else ""
+
+## 在交谈距离内的攻略对象：好感未满的角色中最近的一个
+func auto_favor_partner(character, radius: float) -> AICharacter:
+	if character == null or not is_instance_valid(character) or character.character_data == null:
+		return null
+	var best: AICharacter = null
+	var best_dist := radius
+	for ch in [figure, companion]:
+		if ch == null or not is_instance_valid(ch) or not ch.alive or ch.character_data == null:
+			continue
+		if RelationshipSystem.get_relationship(ch, character.character_data.id).affinity >= 100.0:
+			continue
+		var d: float = character.global_position.distance_to(ch.global_position)
+		if d <= best_dist:
+			best_dist = d
+			best = ch
+	return best
+
+## 当前对话中说话的在场角色（AI 事件或剧本节拍的说话者），供自动模式视线跟随
+func auto_focus_character() -> AICharacter:
+	if not active or finished:
+		return null
+	var speaker := ""
+	if open_story and _ai_beat_active:
+		if _ai_beat.is_empty():
+			return null
+		speaker = str(_ai_beat.get("speaker", "figure"))
+	elif _current_beat_type == "choice":
+		var beats: Dictionary = current_era.get("beats", {})
+		speaker = str(beats.get(current_beat_id, {}).get("speaker", ""))
+	else:
+		# 没有正在进行的对话时不返回角色，避免自动视线乱飘
+		return null
+	if speaker == "companion":
+		return companion if companion != null and is_instance_valid(companion) else figure
+	if speaker == "narrator":
+		return figure if figure != null and is_instance_valid(figure) else companion
+	if speaker != "":
+		for ch in [figure, companion]:
+			if ch != null and is_instance_valid(ch) and ch.character_data != null \
+					and ch.character_data.name == speaker:
+				return ch
+	return figure if figure != null and is_instance_valid(figure) else companion
+
 # ---------- 存档 ----------
 
 func serialize() -> Dictionary:
@@ -3247,6 +3572,7 @@ func after_load() -> void:
 	_ai_beat = {}
 	_ai_event_then = Callable()
 	_ai_event_cooldown = 8.0
+	_auto_picked = false
 	_last_favor_text = ""
 	current_era = eras[era_index]
 	if story_ui != null:

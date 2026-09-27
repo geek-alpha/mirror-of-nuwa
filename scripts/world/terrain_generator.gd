@@ -6,9 +6,23 @@ extends Node
 ## “古老文明 × 先进科技”（亚特兰蒂斯式）的神秘地貌——阶梯台地、同心环水道、辉光遗迹带。
 
 const WORLD_SIZE := 160.0
-const RESOLUTION := 97
+const RESOLUTION := 193
 const WATER_LEVEL := 1.4
 const CELL_SIZE := WORLD_SIZE / float(RESOLUTION - 1)
+
+## 可通行性：相邻格高差上限（米）。97 格时格距 1.67m、相邻格高差 p90=2.83m
+## （高过角色身高），胶囊会被卡在三角面折角上走不动。提高分辨率 + 按坡度削平后
+## 地表梯度落进角色 floor_max_angle（65°）以内，靠走就能通行，不依赖跳跃翻越。
+const MAX_STEP_HEIGHT := 1.05
+const SLOPE_RELAX_PASSES := 5
+const SLOPE_RELAX_STRENGTH := 0.5
+const MAX_RELAX_ADJUST := 1.5
+## 削平扫描只用 4 个半平面方向（右/下/右下/左下）：8 邻域里每对相邻格点会被正反
+## 各看一次，而只有「低的看高的」那一侧会触发，4 个方向覆盖全部格点对且不重不漏。
+## 上限预计算成常量是实打实的开销差：内层循环每格点跑 4 次，现算就是白扔乘法。
+const HALF_DX := [1, 0, 1, -1]
+const HALF_DZ := [0, 1, 1, 1]
+const HALF_LIMIT := [MAX_STEP_HEIGHT, MAX_STEP_HEIGHT, MAX_STEP_HEIGHT * 0.70710678, MAX_STEP_HEIGHT * 0.70710678]
 
 const BIOME_PLAINS := 0
 const BIOME_SAVANNA := 1
@@ -21,6 +35,8 @@ var heights: PackedFloat32Array = PackedFloat32Array()
 var slopes: PackedFloat32Array = PackedFloat32Array()
 var biome_grid: Array = []
 var relic_grid: PackedFloat32Array = PackedFloat32Array()
+## 河道强度（0~1），供着色区分河床/岸线
+var river_grid: PackedFloat32Array = PackedFloat32Array()
 
 var theme: Dictionary = {}
 var accent := Color(0.35, 0.8, 1.0)
@@ -151,9 +167,26 @@ func generate(seed_value: int, theme: Dictionary = {}) -> Node3D:
 	ridge_noise.fractal_type = FastNoiseLite.FRACTAL_RIDGED
 	ridge_noise.fractal_octaves = 3
 
+	# 河流侵蚀：ridged 噪声的谷线（1-|noise| 接近 1 处）即河道走向
+	var river_noise := FastNoiseLite.new()
+	river_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	river_noise.seed = _seed + 71
+	river_noise.frequency = 0.018
+	river_noise.fractal_type = FastNoiseLite.FRACTAL_RIDGED
+	river_noise.fractal_octaves = 3
+
+	# 风蚀沙丘波纹
+	var dune_noise := FastNoiseLite.new()
+	dune_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	dune_noise.seed = _seed + 67
+	dune_noise.frequency = 0.05
+	dune_noise.fractal_type = FastNoiseLite.FRACTAL_FBM
+	dune_noise.fractal_octaves = 2
+
 	heights.resize(RESOLUTION * RESOLUTION)
 	slopes.resize(RESOLUTION * RESOLUTION)
 	relic_grid.resize(RESOLUTION * RESOLUTION)
+	river_grid.resize(RESOLUTION * RESOLUTION)
 	biome_grid.clear()
 
 	for z in RESOLUTION:
@@ -204,6 +237,20 @@ func generate(seed_value: int, theme: Dictionary = {}) -> Node3D:
 			h += relic * 1.5 * (1.0 - mregion * 0.55)
 			relic_grid[idx] = relic
 
+			# 河流侵蚀：沿 ridged 噪声的谷线切出婉蜒河道，两岸微抬形成堤岸。
+			# 山脉区抑制，否则河道会把山脊劈成两半。
+			var river_raw := 1.0 - absf(river_noise.get_noise_2d(nx + wx * 0.7, nz + wz * 0.7))
+			var river := smoothstep(0.87, 0.99, river_raw) * (1.0 - mregion * 0.85)
+			var bank := smoothstep(0.78, 0.9, river_raw) * (1.0 - smoothstep(0.87, 0.99, river_raw)) * (1.0 - mregion * 0.85)
+			h -= river * 1.9
+			h += bank * 0.55
+			river_grid[idx] = river
+
+			# 风蚀沙丘：低地的方向性波纹，给平原细密纹理。振幅 0.3m（低于角色抬腿
+			# 高度）、波长 28m（坡度约 20°），是纹路不是障碍。
+			var dune := sin(nx * 0.22 + nz * 0.09 + dune_noise.get_noise_2d(nx, nz) * 2.4)
+			h += dune * 0.3 * (1.0 - mregion) * (1.0 - river)
+
 			# 湖泊：低洼盆地挖低，湖心最深
 			var lake_mask := smoothstep(0.46, 0.64, lake_noise.get_noise_2d(nx, nz))
 			var spawn_keep := smoothstep(16.0, 30.0, dist)
@@ -216,21 +263,10 @@ func generate(seed_value: int, theme: Dictionary = {}) -> Node3D:
 			h = clampf(h, 0.0, 36.0)
 			heights[idx] = h
 
-			# 生态区：温度 + 湿度 + 海拔 + 遗迹带
-			var t := temp_noise.get_noise_2d(nx, nz)
-			var w := moist_noise.get_noise_2d(nx, nz)
-			var biome := BIOME_PLAINS
-			if h > 12.5:
-				biome = BIOME_MOUNTAINS
-			elif relic > 0.52:
-				biome = BIOME_RELIC
-			elif w > 0.3 and h < 7.5:
-				biome = BIOME_WETLANDS
-			elif t > 0.12 and w < 0.02:
-				biome = BIOME_SAVANNA
-			elif w > 0.12 and t < -0.08:
-				biome = BIOME_FOREST
-			biome_grid.append(biome)
+
+	# 削平超陡壁 + 按最终高度重划生态区（顺序不能反：生态区用海拔阈值判定）
+	_relax_slopes()
+	_assign_biomes(temp_noise, moist_noise)
 
 	# 坡度：用高度网格差分近似（用于岩石/雪线着色）
 	for z in RESOLUTION:
@@ -239,37 +275,61 @@ func generate(seed_value: int, theme: Dictionary = {}) -> Node3D:
 			var hz := heights[mini(z + 1, RESOLUTION - 1) * RESOLUTION + x] - heights[maxi(z - 1, 0) * RESOLUTION + x]
 			slopes[z * RESOLUTION + x] = Vector2(hx, hz).length() / (2.0 * CELL_SIZE)
 
-	# 构建地形网格（带顶点颜色）
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# 构建地形网格（索引化 + 顶点颜色）。不用 SurfaceTool 逐顶点写入：193² 网格下
+	# set_color/add_vertex 的调用开销实测 1.6 秒，索引数组直构只要零头。
+	# 法线用高度场差分解析求，比 generate_normals 扫全网格更快且天然平滑。
+	var wx_arr := PackedFloat32Array()
+	var wz_arr := PackedFloat32Array()
+	wx_arr.resize(RESOLUTION)
+	wz_arr.resize(RESOLUTION)
+	for x in RESOLUTION:
+		wx_arr[x] = _world_x(x)
+	for z in RESOLUTION:
+		wz_arr[z] = _world_z(z)
+	var verts := PackedVector3Array()
+	var colors := PackedColorArray()
+	var normals := PackedVector3Array()
+	verts.resize(RESOLUTION * RESOLUTION)
+	colors.resize(RESOLUTION * RESOLUTION)
+	normals.resize(RESOLUTION * RESOLUTION)
+	for z in RESOLUTION:
+		var row := z * RESOLUTION
+		for x in RESOLUTION:
+			var vidx := row + x
+			verts[vidx] = Vector3(wx_arr[x], heights[vidx], wz_arr[z])
+			colors[vidx] = _vertex_color(x, z, wx_arr[x], wz_arr[z])
+			var hl := heights[row + maxi(x - 1, 0)]
+			var hr := heights[row + mini(x + 1, RESOLUTION - 1)]
+			var hd := heights[maxi(z - 1, 0) * RESOLUTION + x]
+			var hu := heights[mini(z + 1, RESOLUTION - 1) * RESOLUTION + x]
+			normals[vidx] = Vector3(hl - hr, 2.0 * CELL_SIZE, hd - hu).normalized()
+
+	var indices := PackedInt32Array()
+	indices.resize((RESOLUTION - 1) * (RESOLUTION - 1) * 6)
+	var ii := 0
 	for z in RESOLUTION - 1:
+		var row := z * RESOLUTION
 		for x in RESOLUTION - 1:
-			var i00 := z * RESOLUTION + x
+			var i00 := row + x
 			var i10 := i00 + 1
 			var i01 := i00 + RESOLUTION
 			var i11 := i01 + 1
-			var p00 := _vertex(x, z)
-			var p10 := _vertex(x + 1, z)
-			var p01 := _vertex(x, z + 1)
-			var p11 := _vertex(x + 1, z + 1)
-			var c00 := _vertex_color(x, z)
-			var c10 := _vertex_color(x + 1, z)
-			var c01 := _vertex_color(x, z + 1)
-			var c11 := _vertex_color(x + 1, z + 1)
-			st.set_color(c00)
-			st.add_vertex(p00)
-			st.set_color(c10)
-			st.add_vertex(p10)
-			st.set_color(c01)
-			st.add_vertex(p01)
-			st.set_color(c10)
-			st.add_vertex(p10)
-			st.set_color(c11)
-			st.add_vertex(p11)
-			st.set_color(c01)
-			st.add_vertex(p01)
-	st.generate_normals()
-	var mesh := st.commit()
+			indices[ii] = i00
+			indices[ii + 1] = i10
+			indices[ii + 2] = i01
+			indices[ii + 3] = i10
+			indices[ii + 4] = i11
+			indices[ii + 5] = i01
+			ii += 6
+
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_COLOR] = colors
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 
 	var mat := StandardMaterial3D.new()
 	mat.vertex_color_use_as_albedo = true
@@ -300,6 +360,62 @@ func generate(seed_value: int, theme: Dictionary = {}) -> Node3D:
 	body.add_child(col)
 	container.add_child(body)
 	return container
+
+func _relax_slopes() -> void:
+	## 把超过可通行阈值的高差在邻域间来回转移，削掉“一步登天”的岩壁。
+	## 只动超限的格点对，所以山体轮廓、台地、河谷、湖盆都保留，
+	## 抹掉的只是原本就走不上去的刀切面。用 Jacobi 迭代（先累计再统一应用）
+	## 避免边扫边改造成的单向漂移，并对单轮调整量设上限防过冲。
+	var delta := PackedFloat32Array()
+	delta.resize(heights.size())
+	for _pass in SLOPE_RELAX_PASSES:
+		delta.fill(0.0)
+		for z in RESOLUTION:
+			var row := z * RESOLUTION
+			for x in RESOLUTION:
+				var idx := row + x
+				var h := heights[idx]
+				for k in 4:
+					var nx: int = x + HALF_DX[k]
+					var nz: int = z + HALF_DZ[k]
+					if nx < 0 or nx >= RESOLUTION or nz >= RESOLUTION:
+						continue
+					var nidx: int = nz * RESOLUTION + nx
+					var diff: float = heights[nidx] - h
+					# 判定必须看 |diff|：4 个方向只覆盖每对格点一次，而每对里谁高谁低
+					# 都有可能，只判 diff > limit 会漏掉「当前格点高、邻居低」的那一半。
+					var excess: float = absf(diff) - HALF_LIMIT[k]
+					if excess > 0.0:
+						var move: float = excess * SLOPE_RELAX_STRENGTH * 0.5 * signf(diff)
+						delta[idx] += move
+						delta[nidx] -= move
+		for i in heights.size():
+			heights[i] += clampf(delta[i], -MAX_RELAX_ADJUST, MAX_RELAX_ADJUST)
+
+func _assign_biomes(temp_noise: FastNoiseLite, moist_noise: FastNoiseLite) -> void:
+	## 生态区：温度 + 湿度 + 海拔 + 遗迹带。必须在 _relax_slopes 之后调用，
+	## 否则海拔阈值（h > 12.5 判山）会与削平后的实际地形对不上。
+	biome_grid.clear()
+	for z in RESOLUTION:
+		for x in RESOLUTION:
+			var idx := z * RESOLUTION + x
+			var h := heights[idx]
+			var nx := _world_x(x)
+			var nz := _world_z(z)
+			var t := temp_noise.get_noise_2d(nx, nz)
+			var w := moist_noise.get_noise_2d(nx, nz)
+			var biome := BIOME_PLAINS
+			if h > 12.5:
+				biome = BIOME_MOUNTAINS
+			elif relic_grid[idx] > 0.52:
+				biome = BIOME_RELIC
+			elif w > 0.3 and h < 7.5:
+				biome = BIOME_WETLANDS
+			elif t > 0.12 and w < 0.02:
+				biome = BIOME_SAVANNA
+			elif w > 0.12 and t < -0.08:
+				biome = BIOME_FOREST
+			biome_grid.append(biome)
 
 func _build_water_mesh() -> ArrayMesh:
 	## 只在水面以下的网格单元生成水面，避免平面穿透山体。
@@ -351,14 +467,12 @@ func _world_z(z: int) -> float:
 func _vertex(x: int, z: int) -> Vector3:
 	return Vector3(_world_x(x), heights[z * RESOLUTION + x], _world_z(z))
 
-func _vertex_color(x: int, z: int) -> Color:
+func _vertex_color(x: int, z: int, wx: float, wz: float) -> Color:
 	var idx := z * RESOLUTION + x
 	var biome := int(biome_grid[idx])
 	var h := heights[idx]
 	var slope := slopes[idx]
 	var relic := relic_grid[idx]
-	var wx := _world_x(x)
-	var wz := _world_z(z)
 	var n := _color_noise.get_noise_2d(wx, wz)
 	var vein := _vein_noise.get_noise_2d(wx, wz)
 	var c: Color = _biome_palette(biome)
@@ -384,6 +498,19 @@ func _vertex_color(x: int, z: int) -> Color:
 	# 湿度微调：湿地更暗沉
 	if biome == BIOME_WETLANDS:
 		c = c.darkened(0.12)
+	# 河床：河道内偏沙色，近水面转深湿色，让水系一眼可辨
+	var river := river_grid[idx]
+	if river > 0.02:
+		var bed := Color(0.55, 0.48, 0.36).lerp(Color(0.2, 0.3, 0.34), clampf((WATER_LEVEL + 1.2 - h) / 2.0, 0.0, 1.0))
+		c = c.lerp(bed, clampf(river * 1.6, 0.0, 0.85))
+	# 岸线湿痕：水位附近的地面加深，避免水陆之间出现硬边
+	var shore := 1.0 - clampf((h - WATER_LEVEL) / 1.6, 0.0, 1.0)
+	if shore > 0.0 and h >= WATER_LEVEL:
+		c = c.darkened(shore * 0.22)
+	# 岩层等高带：沿高度做细密明暗条纹，坡面读起来像沉积岩而不是均匀色块
+	var band_phase := fposmod(h, 2.6) / 2.6
+	var band_edge := minf(band_phase, 1.0 - band_phase)
+	c = c.darkened((1.0 - smoothstep(0.0, 0.07, band_edge)) * 0.09)
 	# 亮度抖动：让地表有细微斑驳，而非纯色
 	var brightness := 1.0 + n * 0.12
 	return Color(c.r * brightness, c.g * brightness, c.b * brightness)

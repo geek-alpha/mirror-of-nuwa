@@ -61,13 +61,14 @@ const LOW_ENERGY_WARNING := 25.0
 @onready var label: Label3D = $Label
 @onready var rig: Node3D = $Rig
 var stuck_time := 0.0
+var _sidestepped := false
 
 func setup(data: CharacterData) -> void:
 	character_data = data
 	# 物理移动：支持坡面行走，NPC 与玩家使用同一套地面判定
 	# 65° 覆盖程序化地形的最大坡度，避免角色在陡坡上滑落/腾空
 	floor_max_angle = deg_to_rad(65.0)
-	floor_snap_length = 0.35
+	floor_snap_length = 0.45
 	global_position = data.location
 	_update_appearance()
 	# 初始记忆：诞生
@@ -109,7 +110,9 @@ func _physics_process(delta: float) -> void:
 			velocity.z = move_toward(velocity.z, target_vel.z, NPC_ACCEL * delta)
 			velocity.y -= NPC_GRAVITY * delta
 			velocity.y = maxf(velocity.y, -25.0)  # 限制下落速度，避免高速穿透薄碰撞体
+			var before := global_position
 			move_and_slide()
+			ClimbAssist.try_step_up(self, before, delta)
 			var target_yaw := atan2(-dir.normalized().x, -dir.normalized().z)
 			rotation.y = lerp_angle(rotation.y, target_yaw, clampf(10.0 * delta, 0.0, 1.0))
 			_check_stuck(delta)
@@ -121,15 +124,29 @@ func _physics_process(delta: float) -> void:
 		move_and_slide()
 
 func _check_stuck(delta: float) -> void:
-	# 被地形/建筑/同伴卡住时，重新选择附近目标，避免原地卡死
+	## 被地形/建筑/同伴卡住时先沿墙侧移绕过，再退化为重选目标。
+	## 只重选目标是不够的：新目标若仍在墙后，角色会继续顶着同一面墙磨到超时。
 	var hspeed := Vector2(velocity.x, velocity.z).length()
 	if hspeed < 0.7:
 		stuck_time += delta
-		if stuck_time > 1.5:
+		if not _sidestepped and stuck_time > 0.6:
+			_sidestepped = true
+			_sidestep_along_wall()
+		elif stuck_time > 1.8:
 			stuck_time = 0.0
+			_sidestepped = false
 			action_target = WorldManager.random_point_near(global_position, 12.0)
 	else:
 		stuck_time = 0.0
+		_sidestepped = false
+
+func _sidestep_along_wall() -> void:
+	## 沿碰撞面切向走：把目标点挪到切向 4m 处，角色会顺着墙滑向墙的尽头，
+	## 而不是继续顶着墙推。切向取朝目标的那一侧，避免绕远路。
+	var tangent := ClimbAssist.wall_sidestep_dir(self, action_target - global_position)
+	if tangent == Vector3.ZERO:
+		return
+	action_target = global_position + tangent * 4.0
 
 func _process(delta: float) -> void:
 	if not alive:
@@ -210,14 +227,17 @@ func _update_appearance() -> void:
 	var color := _appearance_color()
 	var model_path := str(character_data.appearance.get("model_path", ""))
 	if model_path != "":
-		has_model = _load_model(model_path)
-		if not has_model:
-			push_warning("模型加载失败，使用程序化骨骼角色：%s" % model_path)
+		# 已缓存/已导入的模型同步应用；未缓存（VRM 首载）走分帧加载，先显示程序化骨架
+		var scene := ModelLoader.get_scene(model_path)
+		if scene != null:
+			has_model = _apply_model_scene(scene, model_path)
 	if not has_model:
 		procedural_rig = ProceduralRig.new()
 		procedural_rig.name = "ProceduralRig"
 		rig.add_child(procedural_rig)
 		procedural_rig.build(color, character_data.form, float(character_data.appearance.get("scale", 1.0)))
+		if model_path != "":
+			ModelLoader.load_scene_async(model_path, _on_model_scene_ready)
 
 func _appearance_color() -> Color:
 	var color: Color = Color(0.3, 0.7, 0.9)
@@ -238,24 +258,26 @@ func _clear_rig() -> void:
 	for child in rig.get_children():
 		child.queue_free()
 
-func _load_model(path: String) -> bool:
-	## 优先加载编辑器导入的资源；否则用 GLTFDocument 在运行时解析 .glb/.gltf。
-	var scene: PackedScene = null
-	if ResourceLoader.exists(path):
-		scene = ResourceLoader.load(path) as PackedScene
-	var model_root: Node = null
+func _on_model_scene_ready(path: String, scene) -> void:
+	## 分帧模型加载完成回调：场景就绪后把程序化骨架替换为正式模型。
+	if not is_instance_valid(self) or is_queued_for_deletion() or character_data == null:
+		return
+	# 加载期间可能已换装/换形象，忽略过期回调
+	if str(character_data.appearance.get("model_path", "")) != path:
+		return
+	if has_model:
+		return
 	if scene == null:
-		var gltf := GLTFDocument.new()
-		var state := GLTFState.new()
-		if gltf.append_from_file(path, state) != OK:
-			return false
-		model_root = gltf.generate_scene(state)
-		if model_root == null:
-			return false
-	else:
-		model_root = scene.instantiate()
+		push_warning("模型加载失败，保持程序化骨骼角色：%s" % path)
+		return
+	_clear_rig()
+	has_model = _apply_model_scene(scene, path)
+	_anchor_model_to_ground()
+
+func _apply_model_scene(scene: PackedScene, path: String) -> bool:
+	var model_root: Node = scene.instantiate()
 	rig.add_child(model_root)
-	_fit_model_to_ground(model_root, float(character_data.appearance.get("scale", 1.0)))
+	_fit_model_to_ground(model_root, path, float(character_data.appearance.get("scale", 1.0)))
 	_find_anim_player(model_root)
 	if model_anim_player == null:
 		var skeleton := _find_skeleton(model_root)
@@ -272,9 +294,9 @@ func _load_model(path: String) -> bool:
 const MODEL_FOOT_Y := -0.95
 const MODEL_TARGET_HEIGHT := 1.75
 
-func _fit_model_to_ground(model_root: Node, scale_value: float) -> void:
+func _fit_model_to_ground(model_root: Node, path: String, scale_value: float) -> void:
 	if model_root is Node3D:
-		var aabb := _model_aabb(model_root)
+		var aabb := ModelLoader.scene_aabb(path, model_root)
 		if aabb.size.y <= 0.001:
 			return
 		var height_scale := (MODEL_TARGET_HEIGHT * clampf(scale_value, 0.5, 2.0)) / aabb.size.y
@@ -286,7 +308,8 @@ func _fit_model_to_ground(model_root: Node, scale_value: float) -> void:
 		model_foot_local_y = min_y
 
 ## 每帧把模型脚底锚定到地面（射线检测地形/建筑，空中或未命中时保持原状），
-## 避免坡地、胶囊起伏导致的穿模与忽高忽低。
+## 避免坡地、胶囊起伏导致的穿模与忽高忽低。必须每帧射线：与地形高度函数
+## 混用会在坡面上产生几厘米的周期性跳变（撕裂感），故不做节流。
 func _anchor_model_to_ground() -> void:
 	if model_root == null:
 		return
@@ -307,25 +330,6 @@ func _anchor_model_to_ground() -> void:
 				and from.y - float(hit.position.y) < 3.0:
 			ground_y = float(hit.position.y)
 	model_root.position.y = ground_y - global_position.y - model_foot_local_y
-
-func _model_aabb(root: Node) -> AABB:
-	var boxes: Array = []
-	_collect_aabb(root, Transform3D.IDENTITY, boxes)
-	if boxes.is_empty():
-		return AABB()
-	var result: AABB = boxes[0]
-	for i in range(1, boxes.size()):
-		result = result.merge(boxes[i])
-	return result
-
-func _collect_aabb(node: Node, acc: Transform3D, boxes: Array) -> void:
-	if node is Node3D:
-		var node3d: Node3D = node
-		var acc_local := acc * node3d.transform
-		if node3d is MeshInstance3D and node3d.mesh != null:
-			boxes.append(acc_local * node3d.mesh.get_aabb())
-		for child in node3d.get_children():
-			_collect_aabb(child, acc_local, boxes)
 
 func _find_anim_player(node: Node) -> void:
 	if node is AnimationPlayer:

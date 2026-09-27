@@ -42,6 +42,8 @@ func _ready() -> void:
 	StoryModeManager.open_story = false
 	# 固定从第一纪（周文王）开始，保证断言确定性
 	ConfigManager.set_game_setting("story_start_era", "era_wenwang")
+	# 固定默认第一人称，保证「睁眼附身即第一人称」断言不受用户配置影响
+	ConfigManager.set_game_setting("view_mode_story", "first")
 	StoryModeManager.start_story($World)
 	UIManager.setup()
 	PlayerGodController.setup_camera()
